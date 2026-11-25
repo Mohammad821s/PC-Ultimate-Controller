@@ -98,6 +98,12 @@ class MainActivity : Activity(), PcClient.Listener {
         controls.addView(Ui.button(this, "🔇") { PcClient.media("mute") }, cell())
         controls.addView(Ui.button(this, "⛶") { PcClient.media("fullscreen") }, cell())
         card.addView(controls, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52f)))
+
+        val seek = row()
+        seek.addView(Ui.button(this, "⏪ رجوع") { PcClient.media("left") }, cell())
+        seek.addView(Ui.button(this, "تقديم ⏩") { PcClient.media("right") }, cell())
+        seek.addView(Ui.button(this, "الحلقة التالية ⏭") { PcClient.media("next") }, cell())
+        card.addView(seek, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(48f)))
         root.addView(card, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10f) })
 
         // ---- shortcuts

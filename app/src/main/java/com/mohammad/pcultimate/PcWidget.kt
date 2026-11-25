@@ -25,9 +25,10 @@ class PcWidget : AppWidgetProvider() {
         bind(R.id.btn_netflix, 101, PcService.ACTION_SHORTCUT, "netflix")
         bind(R.id.btn_crunchy, 102, PcService.ACTION_SHORTCUT, "crunchyroll")
         bind(R.id.btn_fortnite, 103, PcService.ACTION_SHORTCUT, "fortnite")
-        bind(R.id.btn_prev, 104, PcService.ACTION_MEDIA, "prev")
+        bind(R.id.btn_back, 104, PcService.ACTION_MEDIA, "left")
         bind(R.id.btn_play, 105, PcService.ACTION_MEDIA, "playpause")
         bind(R.id.btn_next, 106, PcService.ACTION_MEDIA, "next")
+        bind(R.id.btn_fwd, 108, PcService.ACTION_MEDIA, "right")
         bind(R.id.btn_touch, 107, PcService.ACTION_TOUCHPAD, null)
         return v
     }

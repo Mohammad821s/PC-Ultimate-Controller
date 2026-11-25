@@ -204,7 +204,7 @@ class PcService : Service(), PcClient.Listener {
         val dp = { v: Float -> Ui.dp(this, v) }
 
         val params = WindowManager.LayoutParams(
-            dp(310f), dp(250f),
+            dp(330f), dp(260f),
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
@@ -262,7 +262,10 @@ class PcService : Service(), PcClient.Listener {
         }
         val lp = { LinearLayout.LayoutParams(0, dp(40f), 1f).apply { setMargins(dp(3f), dp(6f), dp(3f), 0) } }
         clicks.addView(Ui.button(this, "يسار") { PcClient.click("left") }, lp())
+        clicks.addView(Ui.button(this, "⏪") { PcClient.media("left") }, lp())
         clicks.addView(Ui.button(this, "⏯") { PcClient.media("playpause") }, lp())
+        clicks.addView(Ui.button(this, "⏩") { PcClient.media("right") }, lp())
+        clicks.addView(Ui.button(this, "⏭") { PcClient.media("next") }, lp())
         clicks.addView(Ui.button(this, "يمين") { PcClient.click("right") }, lp())
 
         box.addView(header, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40f)))

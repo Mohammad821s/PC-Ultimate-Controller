@@ -4,3 +4,4 @@ local.properties
 *.keystore
 pc/config.json
 pc/__pycache__/
+server.log

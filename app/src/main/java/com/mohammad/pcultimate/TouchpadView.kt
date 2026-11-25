@@ -5,7 +5,9 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.RectF
+import android.content.res.ColorStateList
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -149,6 +151,7 @@ object Ui {
             gravity = Gravity.CENTER
             maxLines = 1
             background = round(c, color, 14f)
+            foreground = RippleDrawable(ColorStateList.valueOf(0x55FFFFFF), null, round(c, 0xFFFFFFFF.toInt(), 14f))
             val p = dp(c, 8f)
             setPadding(p, p, p, p)
             isClickable = true

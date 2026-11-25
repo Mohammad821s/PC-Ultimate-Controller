@@ -14,6 +14,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from ctypes import wintypes
 
 import websockets
@@ -24,6 +25,17 @@ INPUT_PORT = 8767  # fast UDP channel for pointer movement
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
 CREATE_NO_WINDOW = 0x08000000
+LOG_PATH = os.path.join(HERE, "server.log")
+
+
+def log(msg):
+    try:
+        if os.path.exists(LOG_PATH) and os.path.getsize(LOG_PATH) > 200_000:
+            os.remove(LOG_PATH)
+        with open(LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(time.strftime("%H:%M:%S ") + str(msg) + "\n")
+    except Exception:
+        pass
 
 DEFAULT_CONFIG = {
     "pin": "",
@@ -127,9 +139,12 @@ _send_input = ctypes.windll.user32.SendInput if sys.platform == "win32" else Non
 
 def _send(*inputs):
     if not _send_input:
-        return
+        return 0
     arr = (INPUT * len(inputs))(*inputs)
-    _send_input(len(inputs), arr, ctypes.sizeof(INPUT))
+    n = _send_input(len(inputs), arr, ctypes.sizeof(INPUT))
+    if n != len(inputs):
+        log(f"SendInput blocked ({n}/{len(inputs)}), error {ctypes.GetLastError()}")
+    return n
 
 
 def _mouse(flags, dx=0, dy=0, data=0):
@@ -149,8 +164,12 @@ def mouse_move(dx, dy):
 
 
 def mouse_click(button):
+    # Separate press and release with a short gap: some apps ignore a press+release sent in one batch.
     down, up = BUTTONS.get(button, BUTTONS["left"])
-    _send(_mouse(down), _mouse(up))
+    sent = _send(_mouse(down))
+    time.sleep(0.03)
+    _send(_mouse(up))
+    log(f"click {button} -> {sent}")
 
 
 def mouse_button(button, pressed):
@@ -373,6 +392,8 @@ async def media_watcher():
 async def handle(msg):
     t = msg.get("t")
     loop = asyncio.get_running_loop()
+    if t != "move":
+        log(f"cmd {msg}")
     if t == "move":
         mouse_move(msg.get("dx", 0), msg.get("dy", 0))
     elif t == "click":
@@ -400,6 +421,7 @@ async def client_handler(ws, *_):
         return
     if first.get("t") != "auth" or str(first.get("pin", "")) != str(CONFIG["pin"]):
         print("Wrong PIN from", peer)
+        log(f"wrong PIN from {peer}")
         try:
             await ws.send(json.dumps({"t": "auth_fail"}))
         except Exception:
@@ -407,6 +429,7 @@ async def client_handler(ws, *_):
         await ws.close()
         return
     print("Phone connected:", peer)
+    log(f"phone connected {peer}")
     clients.add(ws)
     authed_ips[peer] = authed_ips.get(peer, 0) + 1
     await ws.send(json.dumps({"t": "hello", "name": socket.gethostname(), "udp": INPUT_PORT}))
