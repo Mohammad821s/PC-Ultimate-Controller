@@ -41,6 +41,7 @@ class TouchpadView(ctx: Context) : View(ctx) {
     private var downTime = 0L
     private var travel = 0f
     private var maxPointers = 1
+    private var speedAvg = 0f
     private val slop = 10f * d
 
     override fun onDraw(canvas: Canvas) {
@@ -68,7 +69,7 @@ class TouchpadView(ctx: Context) : View(ctx) {
                 lastX = e.x; lastY = e.y; lastT = e.eventTime
                 downTime = e.eventTime
                 travel = 0f; maxPointers = 1
-                accX = 0f; accY = 0f; scrollAcc = 0f
+                accX = 0f; accY = 0f; scrollAcc = 0f; speedAvg = 0f
                 parent?.requestDisallowInterceptTouchEvent(true)
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
@@ -98,8 +99,10 @@ class TouchpadView(ctx: Context) : View(ctx) {
                 } else if (maxPointers == 1) {
                     val dxDp = dx / d
                     val dyDp = dy / d
+                    // Smoothed speed so uneven touch timing does not make the pointer jump.
                     val speed = hypot(dxDp, dyDp) / dt // dp per ms
-                    val gain = sensitivity * (1f + 1.2f * min(speed, 3f))
+                    speedAvg += (min(speed, 4f) - speedAvg) * 0.3f
+                    val gain = sensitivity * (1f + 0.8f * min(speedAvg, 2.5f))
                     accX += dxDp * gain
                     accY += dyDp * gain
                     val ix = accX.toInt()

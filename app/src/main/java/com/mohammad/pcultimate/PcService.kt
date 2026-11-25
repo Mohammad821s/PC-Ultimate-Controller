@@ -14,6 +14,7 @@ import android.graphics.drawable.Icon
 import android.media.MediaMetadata
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
+import android.net.wifi.WifiManager
 import android.os.IBinder
 import android.provider.Settings
 import android.view.Gravity
@@ -49,6 +50,7 @@ class PcService : Service(), PcClient.Listener {
     private var overlay: View? = null
     private var overlayParams: WindowManager.LayoutParams? = null
     private var overlayPad: TouchpadView? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -68,6 +70,10 @@ class PcService : Service(), PcClient.Listener {
             })
             isActive = true
         }
+        // Keeps Wi-Fi out of power-save while the service runs, so pointer packets are not delayed.
+        wifiLock = getSystemService(WifiManager::class.java)
+            ?.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "PcUltimate:input")
+            ?.apply { setReferenceCounted(false); acquire() }
         PcClient.listeners.add(this)
         goForeground()
         PcClient.connect()
@@ -93,6 +99,7 @@ class PcService : Service(), PcClient.Listener {
         removeOverlay()
         PcClient.listeners.remove(this)
         session.release()
+        try { wifiLock?.release() } catch (_: Exception) {}
         super.onDestroy()
     }
 

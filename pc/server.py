@@ -20,6 +20,7 @@ import websockets
 
 PORT = 8765
 DISCOVERY_PORT = 8766
+INPUT_PORT = 8767  # fast UDP channel for pointer movement
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "config.json")
 CREATE_NO_WINDOW = 0x08000000
@@ -327,6 +328,7 @@ async def get_media():
 # ---------------------------------------------------------------- networking
 
 clients = set()
+authed_ips = {}  # ip -> number of open connections; only these may use the UDP input channel
 last_media = {"has": False}
 last_thumb_key = None
 last_thumb = ""
@@ -406,7 +408,8 @@ async def client_handler(ws, *_):
         return
     print("Phone connected:", peer)
     clients.add(ws)
-    await ws.send(json.dumps({"t": "hello", "name": socket.gethostname()}))
+    authed_ips[peer] = authed_ips.get(peer, 0) + 1
+    await ws.send(json.dumps({"t": "hello", "name": socket.gethostname(), "udp": INPUT_PORT}))
     await ws.send(json.dumps(public_media(last_media, True), ensure_ascii=False))
     try:
         async for raw in ws:
@@ -418,7 +421,27 @@ async def client_handler(ws, *_):
         pass
     finally:
         clients.discard(ws)
+        authed_ips[peer] = authed_ips.get(peer, 1) - 1
+        if authed_ips[peer] <= 0:
+            authed_ips.pop(peer, None)
         print("Phone disconnected:", peer)
+
+
+class FastInput(asyncio.DatagramProtocol):
+    """Pointer movement and scrolling over UDP: no head-of-line blocking, lowest latency.
+    Packets: b"m,dx,dy" or b"s,steps". Accepted only from phones with an open, PIN-checked connection."""
+
+    def datagram_received(self, data, addr):
+        if addr[0] not in authed_ips:
+            return
+        try:
+            parts = data.decode("ascii").split(",")
+            if parts[0] == "m":
+                mouse_move(int(parts[1]), int(parts[2]))
+            elif parts[0] == "s":
+                mouse_scroll(int(parts[1]))
+        except Exception:
+            pass
 
 
 class Discovery(asyncio.DatagramProtocol):
@@ -437,6 +460,10 @@ async def main():
         await loop.create_datagram_endpoint(Discovery, local_addr=("0.0.0.0", DISCOVERY_PORT))
     except OSError as e:
         print("Discovery disabled:", e)
+    try:
+        await loop.create_datagram_endpoint(FastInput, local_addr=("0.0.0.0", INPUT_PORT))
+    except OSError as e:
+        print("Fast input disabled:", e)
     async with websockets.serve(client_handler, "0.0.0.0", PORT, compression=None, max_size=2 ** 20):
         ip = local_ip()
         print(f"PC Ultimate Controller running on {ip}:{PORT}  PIN: {CONFIG['pin']}")

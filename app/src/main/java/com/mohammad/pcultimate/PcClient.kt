@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.util.Base64
 import okhttp3.OkHttpClient
@@ -15,6 +16,8 @@ import org.json.JSONObject
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.Socket
+import javax.net.SocketFactory
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
@@ -47,7 +50,21 @@ object PcClient {
         fun onMedia(m: MediaState?) {}
     }
 
+    /** Turns off Nagle's algorithm so every small message leaves immediately. */
+    private object NoDelaySocketFactory : SocketFactory() {
+        private val base = SocketFactory.getDefault()
+        private fun tune(s: Socket): Socket = s.apply { tcpNoDelay = true }
+        override fun createSocket(): Socket = tune(base.createSocket())
+        override fun createSocket(host: String?, port: Int): Socket = tune(base.createSocket(host, port))
+        override fun createSocket(host: String?, port: Int, localHost: InetAddress?, localPort: Int): Socket =
+            tune(base.createSocket(host, port, localHost, localPort))
+        override fun createSocket(host: InetAddress?, port: Int): Socket = tune(base.createSocket(host, port))
+        override fun createSocket(address: InetAddress?, port: Int, localAddress: InetAddress?, localPort: Int): Socket =
+            tune(base.createSocket(address, port, localAddress, localPort))
+    }
+
     private val http = OkHttpClient.Builder()
+        .socketFactory(NoDelaySocketFactory)
         .pingInterval(10, TimeUnit.SECONDS)
         .connectTimeout(4, TimeUnit.SECONDS)
         .build()
@@ -66,6 +83,13 @@ object PcClient {
         private set
     @Volatile private var badPin = false
 
+    // Fast UDP channel for pointer movement (sent on its own thread).
+    private val udpThread = HandlerThread("pc-udp").apply { start() }
+    private val udpHandler = Handler(udpThread.looper)
+    private var udpSocket: DatagramSocket? = null
+    @Volatile private var udpTarget: InetAddress? = null
+    @Volatile private var udpPort = 0
+
     private var appCtx: Context? = null
     private var lastThumbKey = ""
     private var lastThumb: Bitmap? = null
@@ -75,6 +99,7 @@ object PcClient {
     }
 
     private fun setStatus(isConnected: Boolean, text: String) {
+        if (!isConnected) udpPort = 0
         connected = isConnected
         statusText = text
         main.post { listeners.forEach { it.onStatus(isConnected, text) } }
@@ -140,6 +165,9 @@ object PcClient {
             "hello" -> {
                 badPin = false
                 pcName = j.optString("name")
+                udpPort = j.optInt("udp", 0)
+                val host = appCtx?.let { Prefs.host(it) } ?: ""
+                udpHandler.post { udpTarget = try { InetAddress.getByName(host) } catch (e: Exception) { null } }
                 setStatus(true, "متصل بـ $pcName")
                 while (true) {
                     val s = pending.poll() ?: break
@@ -183,9 +211,28 @@ object PcClient {
         }
     }
 
-    fun move(dx: Int, dy: Int) = send(JSONObject().put("t", "move").put("dx", dx).put("dy", dy), false)
+    private fun sendFast(payload: String): Boolean {
+        val target = udpTarget
+        if (!connected || target == null || udpPort == 0) return false
+        val port = udpPort
+        udpHandler.post {
+            try {
+                val sock = udpSocket ?: DatagramSocket().also { udpSocket = it }
+                val b = payload.toByteArray()
+                sock.send(DatagramPacket(b, b.size, target, port))
+            } catch (_: Exception) {
+            }
+        }
+        return true
+    }
+
+    fun move(dx: Int, dy: Int) {
+        if (!sendFast("m,$dx,$dy")) send(JSONObject().put("t", "move").put("dx", dx).put("dy", dy), false)
+    }
     fun click(button: String) = send(JSONObject().put("t", "click").put("b", button))
-    fun scroll(steps: Int) = send(JSONObject().put("t", "scroll").put("n", steps), false)
+    fun scroll(steps: Int) {
+        if (!sendFast("s,$steps")) send(JSONObject().put("t", "scroll").put("n", steps), false)
+    }
     fun key(k: String) = send(JSONObject().put("t", "key").put("k", k))
     fun text(s: String) = send(JSONObject().put("t", "text").put("s", s))
     fun media(action: String) = send(JSONObject().put("t", "media").put("a", action))
