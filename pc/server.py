@@ -148,6 +148,9 @@ if sys.platform == "win32":
     _user32.PostMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
     _user32.MapVirtualKeyW.argtypes = (wintypes.UINT, wintypes.UINT)
     _user32.MapVirtualKeyW.restype = wintypes.UINT
+    _user32.GetShellWindow.restype = wintypes.HWND
+    _user32.SwitchToThisWindow.argtypes = (wintypes.HWND, wintypes.BOOL)
+    _user32.GetCursorPos.argtypes = (ctypes.POINTER(wintypes.POINT),)
 else:
     _user32 = _send_input = None
 
@@ -164,16 +167,38 @@ def _legacy(i):
         _user32.keybd_event(k.wVk & 0xFF, 0, k.dwFlags, 0)
 
 
+def release_protected_focus():
+    """Windows system pop-ups (volume, network, Start) reject simulated input while they have focus.
+    Moving focus back to the desktop closes them so input works again."""
+    try:
+        shell = _user32.GetShellWindow()
+        if shell:
+            _user32.SwitchToThisWindow(shell, True)
+            time.sleep(0.05)
+    except Exception as e:
+        log(f"focus reset failed {e}")
+
+
+def _raw_send(inputs):
+    arr = (INPUT * len(inputs))(*inputs)
+    return _send_input(len(inputs), arr, ctypes.sizeof(INPUT))
+
+
 def _send(*inputs):
     if not _send_input:
         return 0
-    arr = (INPUT * len(inputs))(*inputs)
-    n = _send_input(len(inputs), arr, ctypes.sizeof(INPUT))
-    if n != len(inputs):
-        log(f"SendInput failed ({n}/{len(inputs)}), error {ctypes.get_last_error()}, size {ctypes.sizeof(INPUT)}; using fallback")
-        for i in inputs[n:]:
+    n = _raw_send(inputs)
+    if n == len(inputs):
+        return n
+    log(f"SendInput rejected ({n}/{len(inputs)}), error {ctypes.get_last_error()}; resetting focus and retrying")
+    release_protected_focus()
+    rest = inputs[n:]
+    m = _raw_send(rest)
+    if m != len(rest):
+        log(f"retry rejected ({m}/{len(rest)}); using legacy API")
+        for i in rest[m:]:
             _legacy(i)
-    return n
+    return n + m
 
 
 def _mouse(flags, dx=0, dy=0, data=0):
@@ -197,8 +222,12 @@ def mouse_click(button):
     down, up = BUTTONS.get(button, BUTTONS["left"])
     sent = _send(_mouse(down))
     time.sleep(0.03)
-    _send(_mouse(up))
-    log(f"click {button} -> {sent}")
+    released = _send(_mouse(up))
+    if sent and not released:
+        # never leave the button held down (that turns the next move into a drag)
+        release_protected_focus()
+        _legacy(_mouse(up))
+    log(f"click {button} -> down {sent}, up {released}")
 
 
 def mouse_button(button, pressed):
