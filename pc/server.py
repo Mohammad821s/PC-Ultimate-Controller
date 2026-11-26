@@ -6,6 +6,7 @@ what is currently playing (title, app, cover) for the phone's media controls.
 """
 import asyncio
 import base64
+import hashlib
 import ctypes
 import json
 import os
@@ -40,6 +41,7 @@ def log(msg):
 
 DEFAULT_CONFIG = {
     "pin": "",
+    "devices": [],
     "chrome_profile": "Song",
     "shortcuts": {
         "youtube": {"type": "chrome", "url": "https://www.youtube.com"},
@@ -698,17 +700,95 @@ async def handle(msg):
         await loop.run_in_executor(None, library.run, dict(msg.get("item") or {}))
 
 
+# ---------------------------------------------------------------- pairing (approve the phone on the PC)
+
+MB_YESNO, MB_ICONQUESTION, MB_TOPMOST, MB_SETFOREGROUND, MB_SYSTEMMODAL = 0x4, 0x20, 0x40000, 0x10000, 0x1000
+IDYES = 6
+PAIR_TIMEOUT_S = 60
+pair_pending = {}  # token hash -> Future[bool]
+
+
+def token_hash(token):
+    return hashlib.sha256(str(token).encode("utf-8")).hexdigest()
+
+
+def known_device(th):
+    return next((d for d in CONFIG.get("devices", []) if d.get("token") == th), None)
+
+
+def add_device(th, name):
+    devices = [d for d in CONFIG.get("devices", []) if d.get("token") != th]
+    devices.append({"token": th, "name": name[:60], "added": time.strftime("%Y-%m-%d %H:%M")})
+    CONFIG["devices"] = devices
+    save_config()
+
+
+def ask_approval(name, ip):
+    """Blocking Yes/No box on the PC; closes itself after PAIR_TIMEOUT_S (counts as No)."""
+    text = (f'"{name}" wants to control this PC.\n\nPhone address: {ip}\n\n'
+            "Allow it? Choose Yes only if this is your phone.")
+    flags = MB_YESNO | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND | MB_SYSTEMMODAL
+    try:
+        fn = ctypes.windll.user32.MessageBoxTimeoutW
+        fn.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.UINT, wintypes.WORD, wintypes.DWORD]
+        r = fn(None, text, "PC Ultimate Controller - new phone", flags, 0, PAIR_TIMEOUT_S * 1000)
+    except Exception:
+        r = ctypes.windll.user32.MessageBoxW(None, text, "PC Ultimate Controller - new phone", flags)
+    return r == IDYES
+
+
+async def authorize(ws, first, peer):
+    """Returns (ok, reason). Accepts a paired phone's token, or the old PIN, or asks on the PC."""
+    if first.get("t") != "auth":
+        return False, "bad_request"
+    token = str(first.get("token") or "")
+    name = str(first.get("device") or "Phone").strip() or "Phone"
+    th = token_hash(token) if token else ""
+    pin = str(first.get("pin") or "")
+    if pin and pin == str(CONFIG.get("pin")):
+        if th and not known_device(th):
+            add_device(th, name)
+        return True, ""
+    if not token:
+        return False, "wrong_pin" if pin else "not_paired"
+    if known_device(th):
+        return True, ""
+    for k in [k for k, f in pair_pending.items() if f.done() and k != th]:
+        pair_pending.pop(k, None)
+    fut = pair_pending.get(th)
+    if fut is None:
+        if pair_pending:
+            return False, "busy"
+        loop = asyncio.get_running_loop()
+        fut = loop.run_in_executor(None, ask_approval, name, peer)
+        pair_pending[th] = fut
+        log(f"pairing request from {name} {peer}")
+    try:
+        await ws.send(json.dumps({"t": "pair_wait", "timeout": PAIR_TIMEOUT_S}))
+        approved = await asyncio.shield(fut)
+    finally:
+        if fut.done():
+            pair_pending.pop(th, None)
+    if not approved:
+        return False, "denied"
+    if not known_device(th):
+        add_device(th, name)
+        log(f"paired {name} {peer}")
+    return True, ""
+
+
 async def client_handler(ws, *_):
     peer = getattr(ws, "remote_address", ("?",))[0]
     try:
         first = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
     except Exception:
         return
-    if first.get("t") != "auth" or str(first.get("pin", "")) != str(CONFIG["pin"]):
-        print("Wrong PIN from", peer)
-        log(f"wrong PIN from {peer}")
+    ok, reason = await authorize(ws, first, peer)
+    if not ok:
+        print("Refused", peer, reason)
+        log(f"refused {peer}: {reason}")
         try:
-            await ws.send(json.dumps({"t": "auth_fail"}))
+            await ws.send(json.dumps({"t": "auth_fail", "reason": reason}))
         except Exception:
             pass
         await ws.close()
@@ -798,8 +878,9 @@ async def main():
         print(f"PC Ultimate Controller running on {ip}:{PORT}  PIN: {CONFIG['pin']}")
         print("Now-playing info:", "on" if MediaManager else "off (run setup.bat to install it)")
         if NEW_PIN:
-            message_box(f"PC Ultimate Controller is running.\n\nPC address: {ip}\nPIN: {CONFIG['pin']}\n\n"
-                        "Enter the PIN in the phone app. You can always find it in config.json.")
+            message_box(f"PC Ultimate Controller is running.\n\nPC address: {ip}\n\n"
+                        "On your phone open the app and tap Find my PC.\n"
+                        "A box will appear here asking you to allow the phone - choose Yes.")
         asyncio.create_task(media_watcher())
         await asyncio.Future()
 

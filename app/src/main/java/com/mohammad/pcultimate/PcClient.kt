@@ -83,9 +83,19 @@ object Prefs {
     fun port(c: Context): Int = p(c).getInt("port", 8765)
     fun pin(c: Context): String = p(c).getString("pin", "") ?: ""
     fun sens(c: Context): Float = p(c).getFloat("sens", 2.0f)
-    fun save(c: Context, host: String, port: Int, pin: String) {
-        p(c).edit().putString("host", host).putInt("port", port).putString("pin", pin).apply()
+    fun save(c: Context, host: String, port: Int) {
+        p(c).edit().putString("host", host).putInt("port", port).apply()
     }
+    /** Random id this phone uses to identify itself once the PC has approved it. */
+    fun token(c: Context): String {
+        p(c).getString("token", null)?.let { return it }
+        val t = java.util.UUID.randomUUID().toString().replace("-", "")
+        p(c).edit().putString("token", t).apply()
+        return t
+    }
+    fun deviceName(c: Context): String =
+        (try { android.provider.Settings.Global.getString(c.contentResolver, "device_name") } catch (e: Exception) { null })
+            ?.takeIf { it.isNotBlank() } ?: "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}"
     fun saveSens(c: Context, v: Float) { p(c).edit().putFloat("sens", v).apply() }
 }
 
@@ -141,6 +151,7 @@ object PcClient {
     @Volatile var media: MediaState? = null
         private set
     @Volatile private var badPin = false
+    @Volatile private var failText = ""
 
     private val udpThread = HandlerThread("pc-udp").apply { start() }
     private val udpHandler = Handler(udpThread.looper)
@@ -202,15 +213,17 @@ object PcClient {
         val request = Request.Builder().url("ws://$host:${Prefs.port(c)}").build()
         ws = http.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                webSocket.send(JSONObject().put("t", "auth").put("pin", Prefs.pin(c)).toString())
+                val auth = JSONObject().put("t", "auth").put("token", Prefs.token(c)).put("device", Prefs.deviceName(c))
+                Prefs.pin(c).takeIf { it.isNotBlank() }?.let { auth.put("pin", it) }
+                webSocket.send(auth.toString())
             }
             override fun onMessage(webSocket: WebSocket, text: String) = handle(webSocket, text)
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(1000, null) }
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                dropped(webSocket, if (badPin) "Wrong PIN" else "Disconnected")
+                dropped(webSocket, if (badPin) failText else "Disconnected")
             }
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                dropped(webSocket, if (badPin) "Wrong PIN" else "Can't reach your PC")
+                dropped(webSocket, if (badPin) failText else "Can't reach your PC")
             }
         })
     }
@@ -245,7 +258,16 @@ object PcClient {
                 while (true) { val s = pending.poll() ?: break; w.send(s) }
                 send(JSONObject().put("t", "list_shortcuts"))
             }
-            "auth_fail" -> badPin = true
+            "pair_wait" -> setStatus(false, "Approve this phone on your PC")
+            "auth_fail" -> {
+                failText = when (j.optString("reason")) {
+                    "denied" -> "Not allowed on your PC. Tap Connect to ask again"
+                    "busy" -> "Your PC is answering another phone. Try again"
+                    "wrong_pin" -> "Wrong PIN"
+                    else -> "Your PC didn't accept this phone"
+                }
+                badPin = true
+            }
             "media" -> {
                 val m = if (!j.optBoolean("has")) null else {
                     val key = j.optString("title") + "|" + j.optString("app")

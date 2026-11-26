@@ -20,11 +20,11 @@ Every push to `main` builds a new release automatically.
 **PC (Windows 10/11, Python 3.9+)**
 1. Download `PC-Server.zip` and extract it somewhere permanent (e.g. `Documents\PC-Ultimate-Controller`).
 2. Run `setup.bat` and accept the administrator prompt. It installs what it needs, registers a startup task with administrator rights (so clicks also work on the taskbar and admin windows) and starts the server.
-3. A window shows the PC address and the PIN. If Windows Firewall asks, allow **Private and Public** networks.
+3. A window shows the PC address. If Windows Firewall asks, allow **Private and Public** networks.
 
 **Phone**
 1. Open the APK link above in Chrome and install it (allow Chrome to install unknown apps the first time).
-2. Open the app, tap **Search automatically**, enter the PIN, save.
+2. Open the app and tap **Find my PC**. A box appears on the PC asking to allow the phone: choose **Yes**. The phone is remembered from then on.
 3. Long-press the home screen → Widgets → PC Ultimate Controller.
 
 ## Customize (pc/config.json)

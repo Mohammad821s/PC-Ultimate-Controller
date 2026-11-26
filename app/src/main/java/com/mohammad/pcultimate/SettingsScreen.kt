@@ -257,7 +257,6 @@ private fun ConnectionSection() {
     val scope = rememberCoroutineScope()
     var host by remember { mutableStateOf(Prefs.host(ctx)) }
     var port by remember { mutableStateOf(Prefs.port(ctx).toString()) }
-    var pin by remember { mutableStateOf(Prefs.pin(ctx)) }
     var note by remember { mutableStateOf("") }
     Section("Connection") {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -270,7 +269,12 @@ private fun ConnectionSection() {
                 scope.launch {
                     val r = withContext(Dispatchers.IO) { PcClient.discover() }
                     if (r == null) note = "No PC found. Check the PC app is running and allowed through the firewall."
-                    else { host = r.first; port = r.second.toString(); note = "Found ${r.third}. Enter its PIN and save." }
+                    else {
+                        host = r.first; port = r.second.toString()
+                        Prefs.save(ctx, host, r.second)
+                        PcClient.reconnect()
+                        note = "Found ${r.third}. Choose Yes in the box that appears on your PC."
+                    }
                 }
             },
             modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(14.dp),
@@ -284,16 +288,13 @@ private fun ConnectionSection() {
                 shape = RoundedCornerShape(14.dp), modifier = Modifier.weight(1f),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
         }
-        OutlinedTextField(pin, { pin = it }, label = { Text("PIN") }, singleLine = true,
-            shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword))
         Button(
             onClick = {
-                Prefs.save(ctx, host.trim(), port.toIntOrNull() ?: 8765, pin.trim())
+                Prefs.save(ctx, host.trim(), port.toIntOrNull() ?: 8765)
                 PcClient.reconnect()
-                note = "Saved. Connecting…"
+                note = "Connecting… If this phone is new, choose Yes on your PC."
             },
             modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(14.dp)
-        ) { Text("Save and connect") }
+        ) { Text("Connect") }
     }
 }
