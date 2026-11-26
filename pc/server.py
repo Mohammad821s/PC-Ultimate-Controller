@@ -147,6 +147,11 @@ if sys.platform == "win32":
     _user32.SendMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
     _user32.PostMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
     _user32.GetGUIThreadInfo.argtypes = (wintypes.DWORD, ctypes.c_void_p)
+    _user32.GetClassNameW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+    _user32.WindowFromPoint.argtypes = (wintypes.POINT,)
+    _user32.WindowFromPoint.restype = wintypes.HWND
+    _user32.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
+    _user32.GetAncestor.restype = wintypes.HWND
     _user32.MapVirtualKeyW.argtypes = (wintypes.UINT, wintypes.UINT)
     _user32.MapVirtualKeyW.restype = wintypes.UINT
     _user32.GetShellWindow.restype = wintypes.HWND
@@ -199,11 +204,105 @@ def mouse_move(dx, dy):
     _send(_mouse(MOUSE_MOVE, int(dx), int(dy)))
 
 
+TASKBAR_CLASSES = {"Shell_TrayWnd", "Shell_SecondaryTrayWnd", "NotifyIconOverflowWindow",
+                   "TopLevelWindowForOverflowXamlIsland"}
+
+import queue
+import threading as _threading
+
+_uia_jobs = queue.Queue()
+_uia_ready = _threading.Event()
+_uia_ok = False
+
+
+def _uia_worker():
+    """All UI Automation work happens on this one thread, which owns its own COM apartment."""
+    global _uia_ok
+    try:
+        import uiautomation as auto
+        init = auto.UIAutomationInitializerInThread()
+        init.__enter__()
+        auto.ControlFromPoint(1, 1)  # warm up: the first call is slow
+        _uia_ok = True
+    except Exception as e:
+        log(f"uiautomation unavailable: {e}")
+        auto = None
+    _uia_ready.set()
+    while True:
+        pt, done, result = _uia_jobs.get()
+        try:
+            result.append(_invoke_with(auto, pt) if auto else False)
+        except Exception as e:
+            log(f"taskbar error: {e}")
+            result.append(False)
+        done.set()
+
+
+_threading.Thread(target=_uia_worker, daemon=True).start()
+
+
+def _root_class_at_cursor():
+    pt = wintypes.POINT()
+    _user32.GetCursorPos(ctypes.byref(pt))
+    hwnd = _user32.WindowFromPoint(pt)
+    root = _user32.GetAncestor(hwnd, 2) if hwnd else None
+    buf = ctypes.create_unicode_buffer(128)
+    if root:
+        _user32.GetClassNameW(root, buf, 128)
+    return buf.value, pt
+
+
+def _invoke_with(auto, pt):
+    ctl = auto.ControlFromPoint(pt.x, pt.y)
+    for _ in range(4):
+        if ctl is None:
+            break
+        for how in ("invoke", "toggle", "expand", "legacy"):
+            try:
+                if how == "invoke":
+                    ctl.GetInvokePattern().Invoke()
+                elif how == "toggle":
+                    ctl.GetTogglePattern().Toggle()
+                elif how == "expand":
+                    ctl.GetExpandCollapsePattern().Expand()
+                else:
+                    ctl.GetLegacyIAccessiblePattern().DoDefaultAction()
+                log(f"taskbar {how}: '{ctl.Name}'")
+                return True
+            except Exception:
+                continue
+        ctl = ctl.GetParentControl()
+    log("taskbar: nothing to activate under the pointer")
+    return False
+
+
+def invoke_at(pt):
+    """Activates the taskbar item under the pointer without a simulated click.
+    Simulated clicks on the taskbar make Windows block all further simulated input."""
+    _uia_ready.wait(10)
+    if not _uia_ok:
+        log("taskbar click skipped (uiautomation not available)")
+        return False
+    done, result = _threading.Event(), []
+    _uia_jobs.put((pt, done, result))
+    if not done.wait(10):
+        log("taskbar: timed out")
+        return False
+    return result[0]
+
+
 def mouse_click(button):
-    # mouse_event is accepted on this PC where SendInput button events are rejected
-    down, up = BUTTONS.get(button, BUTTONS["left"])
     if not _user32:
         return
+    cls, pt = _root_class_at_cursor()
+    if cls in TASKBAR_CLASSES:
+        if button == "left":
+            invoke_at(pt)
+        else:
+            log(f"skipped {button} click on the taskbar")
+        return
+    # mouse_event is accepted on this PC where SendInput button events are rejected
+    down, up = BUTTONS.get(button, BUTTONS["left"])
     _user32.mouse_event(down, 0, 0, 0, 0)
     time.sleep(0.03)
     _user32.mouse_event(up, 0, 0, 0, 0)
@@ -303,6 +402,12 @@ def post_key(vk):
         return
     _user32.PostMessageW(target, WM_KEYDOWN, vk, _key_lparam(vk, False))
     _user32.PostMessageW(target, WM_KEYUP, vk, _key_lparam(vk, True) & 0xFFFFFFFF)
+
+
+def _class_name(hwnd):
+    buf = ctypes.create_unicode_buffer(128)
+    _user32.GetClassNameW(hwnd, buf, 128)
+    return buf.value
 
 
 def post_text(text):
@@ -527,7 +632,7 @@ async def handle(msg):
     if t == "move":
         mouse_move(msg.get("dx", 0), msg.get("dy", 0))
     elif t == "click":
-        mouse_click(msg.get("b", "left"))
+        await loop.run_in_executor(None, mouse_click, msg.get("b", "left"))
     elif t == "button":
         mouse_button(msg.get("b", "left"), bool(msg.get("down")))
     elif t == "scroll":
