@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">PC Ultimate Controller</string>
-    <string name="widget_desc">اختصارات وتاتش باد للكمبيوتر</string>
+    <string name="widget_desc">Now playing and your shortcuts</string>
+    <string name="widget_small_desc">Now playing with play and next</string>
+    <string name="widget_large_desc">Now playing, controls, shortcuts and the floating touchpad</string>
 </resources>

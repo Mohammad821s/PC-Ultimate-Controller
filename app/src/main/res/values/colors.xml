@@ -1,4 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="launcher_bg">#2563EB</color>
+    <color name="w_bg">#F4F6F9</color>
+    <color name="w_tile">#E3E7ED</color>
+    <color name="w_text">#121821</color>
+    <color name="w_muted">#5B6576</color>
+    <color name="w_accent">#2F6BEB</color>
+    <color name="w_on_accent">#FFFFFF</color>
+    <color name="w_art_bg">#C9D7F4</color>
+    <color name="w_art_fg">#2F5FCC</color>
 </resources>

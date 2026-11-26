@@ -34,6 +34,13 @@ jobs:
             keytool -genkeypair -keystore app/release.keystore -storetype PKCS12 -alias pcultimate -keyalg RSA -keysize 2048 -validity 10000 -storepass pcultimate -keypass pcultimate -dname "CN=PC Ultimate Controller"
           fi
 
+      - name: Fonts
+        run: |
+          mkdir -p app/src/main/res/font
+          curl -fsSL -o app/src/main/res/font/manrope.ttf "https://github.com/google/fonts/raw/main/ofl/manrope/Manrope%5Bwght%5D.ttf"
+          curl -fsSL -o app/src/main/res/font/inter.ttf "https://github.com/google/fonts/raw/main/ofl/inter/Inter%5Bopsz,wght%5D.ttf"
+          ls -la app/src/main/res/font
+
       - name: Build APK
         run: gradle :app:assembleRelease --no-daemon --stacktrace
 
@@ -41,7 +48,8 @@ jobs:
         run: |
           mkdir out
           cp app/build/outputs/apk/release/app-release.apk out/PC-Ultimate-Controller.apk
-          cd pc && zip -r ../out/PC-Server.zip . && cd ..
+          sed -i "s/^VERSION = \"dev\"/VERSION = \"${{ github.run_number }}\"/" pc/server.py
+          cd pc && zip -r ../out/PC-Server.zip . -x "test_*" && cd ..
 
       - uses: softprops/action-gh-release@v2
         with:

@@ -6,3 +6,6 @@ pc/config.json
 pc/__pycache__/
 server.log
 server.pid
+app/src/main/res/font/
+pc/icons/
+pc/icon.ps1

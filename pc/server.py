@@ -19,6 +19,7 @@ from ctypes import wintypes
 
 import websockets
 
+VERSION = "dev"  # replaced with the build number by the release workflow
 PORT = 8765
 DISCOVERY_PORT = 8766
 INPUT_PORT = 8767  # fast UDP channel for pointer movement
@@ -74,6 +75,17 @@ def load_config():
 
 
 CONFIG, NEW_PIN = load_config()
+
+
+def save_config():
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(CONFIG, f, ensure_ascii=False, indent=2)
+
+
+import library  # noqa: E402
+
+library.set_logger(lambda m: log(m))
+SHORTCUTS = library.Shortcuts(CONFIG, save_config)
 
 
 def local_ip():
@@ -216,8 +228,14 @@ _uia_ok = False
 
 
 def _uia_worker():
-    """All UI Automation work happens on this one thread, which owns its own COM apartment."""
+    """UI Automation and other COM work (volume) happens on this one thread, which owns its own COM apartment."""
     global _uia_ok
+    auto = None
+    try:
+        import comtypes
+        comtypes.CoInitialize()
+    except Exception:
+        pass
     try:
         import uiautomation as auto
         init = auto.UIAutomationInitializerInThread()
@@ -229,13 +247,24 @@ def _uia_worker():
         auto = None
     _uia_ready.set()
     while True:
-        pt, done, result = _uia_jobs.get()
+        fn, done, result = _uia_jobs.get()
         try:
-            result.append(_invoke_with(auto, pt) if auto else False)
+            result.append(fn(auto))
         except Exception as e:
-            log(f"taskbar error: {e}")
-            result.append(False)
+            log(f"COM job error: {e}")
+            result.append(None)
         done.set()
+
+
+def run_com(fn, timeout=10):
+    """Runs fn(auto) on the COM thread and returns its result (None on timeout)."""
+    _uia_ready.wait(10)
+    done, result = _threading.Event(), []
+    _uia_jobs.put((fn, done, result))
+    if not done.wait(timeout):
+        log("COM job timed out")
+        return None
+    return result[0]
 
 
 _threading.Thread(target=_uia_worker, daemon=True).start()
@@ -283,12 +312,7 @@ def invoke_at(pt):
     if not _uia_ok:
         log("taskbar click skipped (uiautomation not available)")
         return False
-    done, result = _threading.Event(), []
-    _uia_jobs.put((pt, done, result))
-    if not done.wait(10):
-        log("taskbar: timed out")
-        return False
-    return result[0]
+    return bool(run_com(lambda auto: _invoke_with(auto, pt)))
 
 
 def mouse_click(button):
@@ -494,28 +518,11 @@ def launch_store_app(name):
 
 
 def run_shortcut(sid):
-    sc = CONFIG["shortcuts"].get(sid)
+    sc = SHORTCUTS.get(sid)
     if not sc:
-        print("Unknown shortcut:", sid)
+        log(f"unknown shortcut {sid}")
         return
-    kind = sc.get("type")
-    if kind == "chrome":
-        exe = chrome_path()
-        if exe:
-            args = [exe]
-            prof = chrome_profile_dir(CONFIG.get("chrome_profile", ""))
-            if prof:
-                args.append(f"--profile-directory={prof}")
-            args.append(sc["url"])
-            subprocess.Popen(args)
-        else:
-            os.startfile(sc["url"])
-    elif kind == "app":
-        launch_store_app(sc["name"])
-    elif kind == "uri":
-        os.startfile(sc["uri"])
-    elif kind == "command":
-        subprocess.Popen(sc["command"], shell=True)
+    library.run(sc)
 
 
 # ---------------------------------------------------------------- now playing (optional)
@@ -584,6 +591,7 @@ async def get_media():
 clients = set()
 authed_ips = {}  # ip -> number of open connections; only these may use the UDP input channel
 last_media = {"has": False}
+last_volume = None
 last_thumb_key = None
 last_thumb = ""
 
@@ -605,12 +613,24 @@ def public_media(m, with_thumb):
     return out
 
 
+def volume_msg():
+    v = last_volume
+    return {"t": "volume", "v": v[0], "muted": v[1]} if v else {"t": "volume", "v": None}
+
+
 async def media_watcher():
-    global last_media, last_thumb_key, last_thumb
+    global last_media, last_thumb_key, last_thumb, last_volume
+    loop = asyncio.get_running_loop()
     while True:
         await asyncio.sleep(1.0)
         if not clients:
             continue
+        vol = await loop.run_in_executor(None, run_com, lambda auto: library.get_volume(), 5)
+        if vol is not None:
+            vol = (round(vol[0], 3), vol[1])
+        if vol != last_volume:
+            last_volume = vol
+            await broadcast(volume_msg())
         m = await get_media()
         key = (m.get("title"), m.get("app"))
         new_thumb = False
@@ -627,8 +647,10 @@ async def media_watcher():
 async def handle(msg):
     t = msg.get("t")
     loop = asyncio.get_running_loop()
-    if t != "move":
+    if t not in ("move", "save_shortcut", "test_shortcut"):
         log(f"cmd {msg}")
+    elif t != "move":
+        log(f"cmd {t} {str(msg.get('item', {}).get('name', ''))}")
     if t == "move":
         mouse_move(msg.get("dx", 0), msg.get("dy", 0))
     elif t == "click":
@@ -651,6 +673,29 @@ async def handle(msg):
             press_key("f" if a == "fullscreen" else a)
     elif t == "shortcut":
         await loop.run_in_executor(None, run_shortcut, msg.get("id", ""))
+    elif t == "volume":
+        global last_volume
+        level = float(msg.get("v", 0))
+        await loop.run_in_executor(None, run_com, lambda auto: library.set_volume(level), 5)
+        last_volume = (round(level, 3), False)
+    elif t == "list_shortcuts":
+        return {"t": "shortcuts", "items": await loop.run_in_executor(None, SHORTCUTS.public_list)}
+    elif t == "list_apps":
+        return {"t": "apps", "items": await loop.run_in_executor(None, library.list_apps, bool(msg.get("refresh")))}
+    elif t == "list_browsers":
+        return {"t": "browsers", "items": await loop.run_in_executor(None, library.list_browsers)}
+    elif t == "save_shortcut":
+        sid = await loop.run_in_executor(None, SHORTCUTS.save, dict(msg.get("item") or {}))
+        await broadcast({"t": "shortcuts", "items": await loop.run_in_executor(None, SHORTCUTS.public_list)})
+        return {"t": "saved", "id": sid}
+    elif t == "delete_shortcut":
+        await loop.run_in_executor(None, SHORTCUTS.delete, msg.get("id", ""))
+        await broadcast({"t": "shortcuts", "items": await loop.run_in_executor(None, SHORTCUTS.public_list)})
+    elif t == "reorder_shortcuts":
+        await loop.run_in_executor(None, SHORTCUTS.reorder, list(msg.get("ids") or []))
+        await broadcast({"t": "shortcuts", "items": await loop.run_in_executor(None, SHORTCUTS.public_list)})
+    elif t == "test_shortcut":
+        await loop.run_in_executor(None, library.run, dict(msg.get("item") or {}))
 
 
 async def client_handler(ws, *_):
@@ -672,14 +717,17 @@ async def client_handler(ws, *_):
     log(f"phone connected {peer}")
     clients.add(ws)
     authed_ips[peer] = authed_ips.get(peer, 0) + 1
-    await ws.send(json.dumps({"t": "hello", "name": socket.gethostname(), "udp": INPUT_PORT}))
+    await ws.send(json.dumps({"t": "hello", "name": socket.gethostname(), "udp": INPUT_PORT, "version": VERSION}))
     await ws.send(json.dumps(public_media(last_media, True), ensure_ascii=False))
+    await ws.send(json.dumps(volume_msg()))
     try:
         async for raw in ws:
             try:
-                await handle(json.loads(raw))
+                reply = await handle(json.loads(raw))
+                if reply:
+                    await ws.send(json.dumps(reply, ensure_ascii=False))
             except Exception as e:
-                print("Command error:", e)
+                log(f"command error: {e}")
     except Exception:
         pass
     finally:
@@ -745,7 +793,7 @@ async def main():
         await loop.create_datagram_endpoint(FastInput, local_addr=("0.0.0.0", INPUT_PORT))
     except OSError as e:
         print("Fast input disabled:", e)
-    async with websockets.serve(client_handler, "0.0.0.0", PORT, compression=None, max_size=2 ** 20):
+    async with websockets.serve(client_handler, "0.0.0.0", PORT, compression=None, max_size=2 ** 22):
         ip = local_ip()
         print(f"PC Ultimate Controller running on {ip}:{PORT}  PIN: {CONFIG['pin']}")
         print("Now-playing info:", "on" if MediaManager else "off (run setup.bat to install it)")

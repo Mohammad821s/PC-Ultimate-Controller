@@ -75,7 +75,9 @@ class PcService : Service(), PcClient.Listener {
             ?.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "PcUltimate:input")
             ?.apply { setReferenceCounted(false); acquire() }
         PcClient.listeners.add(this)
+        AppSettings.load(this)
         goForeground()
+        Widgets.updateAll(this)
         PcClient.connect()
     }
 
@@ -104,7 +106,11 @@ class PcService : Service(), PcClient.Listener {
     }
 
     override fun onStatus(connected: Boolean, text: String) = refreshNotification()
-    override fun onMedia(m: MediaState?) = refreshNotification()
+    override fun onMedia(m: MediaState?) {
+        refreshNotification()
+        Widgets.updateAll(this)
+    }
+    override fun onShortcuts(items: List<Shortcut>) = Widgets.updateAll(this)
 
     // ------------------------------------------------------------ notification
 
@@ -202,36 +208,49 @@ class PcService : Service(), PcClient.Listener {
     private fun showOverlay() {
         val wm = getSystemService(WindowManager::class.java)
         val dp = { v: Float -> Ui.dp(this, v) }
+        val accent = currentAccent(this)
+        val tile = 0xFF1F2632.toInt()
+        val fg = 0xFFC9D1DD.toInt()
 
         val params = WindowManager.LayoutParams(
-            dp(330f), dp(260f),
+            dp(330f), dp(300f),
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.LEFT
-            x = dp(24f)
-            y = dp(220f)
+            x = dp(30f)
+            y = dp(260f)
         }
 
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = Ui.round(this@PcService, 0xF0101620.toInt(), 22f)
-            val p = dp(8f)
+            background = Ui.round(this@PcService, 0xEB11151C.toInt(), 28f).apply {
+                setStroke(dp(1f), 0x14FFFFFF)
+            }
+            elevation = dp(12f).toFloat()
+            val p = dp(10f)
             setPadding(p, p, p, p)
+            layoutDirection = View.LAYOUT_DIRECTION_LTR
         }
 
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             layoutDirection = View.LAYOUT_DIRECTION_LTR
         }
-        val handle = TextView(this).apply {
-            text = "⠿  اسحب من هنا"
-            setTextColor(Ui.MUTED)
-            textSize = 13f
+        val handle = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(8f), 0, 0, 0)
+            setPadding(dp(12f), 0, 0, 0)
         }
+        handle.addView(View(this).apply { background = Ui.round(this@PcService, 0xFF4A5363.toInt(), 3f) },
+            LinearLayout.LayoutParams(dp(44f), dp(5f)))
+        handle.addView(TextView(this).apply {
+            text = PcState.pcName.ifBlank { "PC Ultimate Controller" }
+            setTextColor(0xFF8A94A6.toInt()); textSize = 12.5f; maxLines = 1
+            setPadding(dp(12f), 0, 0, 0)
+        })
         var startX = 0f; var startY = 0f; var origX = 0; var origY = 0
         handle.setOnTouchListener { _, ev ->
             when (ev.actionMasked) {
@@ -246,35 +265,42 @@ class PcService : Service(), PcClient.Listener {
             }
             true
         }
-        val close = Ui.button(this, "✕") { removeOverlay() }
-        header.addView(handle, LinearLayout.LayoutParams(0, dp(40f), 1f))
-        header.addView(close, LinearLayout.LayoutParams(dp(44f), dp(40f)))
+        val close = Ui.iconButton(this, R.drawable.ic_close, "Close floating touchpad", tile, fg, 10f) { removeOverlay() }
+        header.addView(handle, LinearLayout.LayoutParams(0, dp(36f), 1f))
+        header.addView(close, LinearLayout.LayoutParams(dp(34f), dp(34f)))
 
         val pad = TouchpadView(this).apply {
-            sensitivity = Prefs.sens(this@PcService)
-            hint = "تاتش باد"
+            AppSettings.load(this@PcService)
+            sensitivity = AppSettings.sensitivity
+            naturalScroll = AppSettings.naturalScroll
+            haptics = AppSettings.haptics
+            cornerRadius = dp(20f).toFloat()
+            hint = "Touchpad"
+            setColors(0xFF161B23.toInt(), 0xFF252D39.toInt(), 0xFF6D7789.toInt(), accent)
         }
         overlayPad = pad
 
-        val clicks = LinearLayout(this).apply {
+        val controls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutDirection = View.LAYOUT_DIRECTION_LTR
         }
-        val lp = { LinearLayout.LayoutParams(0, dp(40f), 1f).apply { setMargins(dp(3f), dp(6f), dp(3f), 0) } }
-        clicks.addView(Ui.button(this, "يسار") { PcClient.click("left") }, lp())
-        clicks.addView(Ui.button(this, "⏪") { PcClient.media("left") }, lp())
-        clicks.addView(Ui.button(this, "⏯") { PcClient.media("playpause") }, lp())
-        clicks.addView(Ui.button(this, "⏩") { PcClient.media("right") }, lp())
-        clicks.addView(Ui.button(this, "⏭") { PcClient.media("next") }, lp())
-        clicks.addView(Ui.button(this, "يمين") { PcClient.click("right") }, lp())
+        val lp = { LinearLayout.LayoutParams(0, dp(46f), 1f).apply { setMargins(dp(3f), dp(10f), dp(3f), 0) } }
+        controls.addView(Ui.button(this, "L", tile, fg) { PcClient.click("left") }, lp())
+        controls.addView(Ui.iconButton(this, R.drawable.ic_back10, "Back", tile, fg) { PcClient.media("left") }, lp())
+        controls.addView(Ui.iconButton(this, R.drawable.ic_pause, "Play or pause", accent, 0xFFFFFFFF.toInt()) { PcClient.media("playpause") }, lp())
+        controls.addView(Ui.iconButton(this, R.drawable.ic_fwd10, "Forward", tile, fg) { PcClient.media("right") }, lp())
+        controls.addView(Ui.button(this, "R", tile, fg) { PcClient.click("right") }, lp())
 
-        box.addView(header, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(40f)))
-        box.addView(pad, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply {
-            topMargin = dp(6f)
-        })
-        box.addView(clicks, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        box.addView(header, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(36f)))
+        box.addView(pad, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(8f) })
+        box.addView(controls, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
 
+        box.alpha = 0f
+        box.scaleX = 0.96f
+        box.scaleY = 0.96f
         wm.addView(box, params)
+        box.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(180)
+            .setInterpolator(android.view.animation.PathInterpolator(0.23f, 1f, 0.32f, 1f)).start()
         overlay = box
         overlayParams = params
     }
