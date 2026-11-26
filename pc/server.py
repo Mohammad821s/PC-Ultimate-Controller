@@ -1055,8 +1055,90 @@ def start_remote():
         add_client=clients.add,
         remove_client=clients.discard,
         log=log,
+        screen_factory=make_rtc_screen,
     )
     asyncio.create_task(remote_agent.run())
+
+
+# ---------------------------------------------------------------- screen over WebRTC (from outside home)
+
+RTC_HEIGHTS = {"auto": 720, "1080": 1080, "720": 720, "480": 480}
+
+try:
+    from aiortc import VideoStreamTrack
+    import av  # noqa: F401  (comes with aiortc)
+    RTC_VIDEO = True
+except Exception:  # pragma: no cover
+    VideoStreamTrack = object
+    RTC_VIDEO = False
+
+
+class ScreenTrack(VideoStreamTrack):
+    """Video track fed by screen captures; aiortc encodes it and adapts the bitrate to the network."""
+    kind = "video"
+
+    def __init__(self, session):
+        super().__init__()
+        self.session = session
+
+    async def recv(self):
+        pts, time_base = await self.next_timestamp()
+        loop = asyncio.get_running_loop()
+        img = await loop.run_in_executor(_capture_pool, self.session.cap.grab_image, self.session.height)
+        frame = av.VideoFrame.from_image(img)
+        frame.pts = pts
+        frame.time_base = time_base
+        return frame
+
+
+class RtcScreen:
+    def __init__(self, cap, quality="auto"):
+        self.cap = cap
+        self.quality = quality if quality in RTC_HEIGHTS else "auto"
+        self.height = min(RTC_HEIGHTS[self.quality], cap.height)
+        self.track = ScreenTrack(self)
+        log(f"remote screen start {self.quality}")
+
+    def info(self):
+        return {"t": "stream_info", "w": self.cap.width, "h": self.cap.height,
+                "quality": self.quality, "height": self.height}
+
+    async def command(self, m):
+        t = m.get("t")
+        loop = asyncio.get_running_loop()
+        if t == "quality":
+            self.quality = str(m.get("q") or "auto")
+            if self.quality not in RTC_HEIGHTS:
+                self.quality = "auto"
+            self.height = min(RTC_HEIGHTS[self.quality], self.cap.height)
+            return self.info()
+        if t == "abs":
+            x, y = self.cap.to_screen(m.get("x", 0), m.get("y", 0))
+            _user32.SetCursorPos(x, y)
+            return None
+        if t == "tap":
+            x, y = self.cap.to_screen(m.get("x", 0), m.get("y", 0))
+            _user32.SetCursorPos(x, y)
+            await loop.run_in_executor(None, mouse_click, m.get("b", "left"))
+            return None
+        if t == "ack":
+            return None
+        return await handle(m)
+
+    def close(self):
+        try:
+            self.track.stop()
+        except Exception:
+            pass
+        log("remote screen stop")
+
+
+async def make_rtc_screen():
+    if not (screen.AVAILABLE and RTC_VIDEO):
+        raise RuntimeError("screen capture or video encoder missing")
+    loop = asyncio.get_running_loop()
+    cap = await loop.run_in_executor(_capture_pool, _get_capturer)
+    return RtcScreen(cap, "auto")
 
 
 class FastInput(asyncio.DatagramProtocol):

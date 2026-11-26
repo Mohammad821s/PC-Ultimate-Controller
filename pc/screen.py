@@ -44,6 +44,24 @@ class Capturer:
         if not force and key == self.last_key:
             return None
         self.last_key = key
+        img = self._compose(raw, pt, target_h)
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=quality, optimize=False)
+        return buf.getvalue()
+
+    def grab_image(self, target_h):
+        """Current screen (with the pointer drawn) as an RGB image, for the video encoder.
+        Width and height are kept even, as the encoder requires."""
+        raw = self.sct.grab(self.mon)
+        pt = wintypes.POINT()
+        _user32.GetCursorPos(ctypes.byref(pt))
+        img = self._compose(raw, pt, target_h)
+        w, h = img.width & ~1, img.height & ~1
+        if (w, h) != img.size:
+            img = img.crop((0, 0, w, h))
+        return img
+
+    def _compose(self, raw, pt, target_h):
         img = Image.frombuffer("RGB", raw.size, raw.bgra, "raw", "BGRX")
         h = min(target_h, self.height)
         if h != self.height:
@@ -56,9 +74,7 @@ class Capturer:
             poly = [(cx + x * k, cy + y * k) for x, y in _ARROW]
             d = ImageDraw.Draw(img)
             d.polygon(poly, fill=(255, 255, 255), outline=(0, 0, 0))
-        buf = io.BytesIO()
-        img.save(buf, "JPEG", quality=quality, optimize=False)
-        return buf.getvalue()
+        return img
 
     def to_screen(self, nx, ny):
         nx = min(max(float(nx), 0.0), 1.0)

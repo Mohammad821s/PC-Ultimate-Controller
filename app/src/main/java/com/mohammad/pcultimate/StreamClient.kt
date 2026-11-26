@@ -65,7 +65,7 @@ class StreamClient(private val ctx: Context, private val onFrame: (Bitmap) -> Un
         StreamState.quality = quality
         val host = Prefs.host(ctx)
         if (host.isBlank()) { setStatus("Set up your PC first"); return }
-        if (PcClient.viaRemote) { fatal = true; setStatus("From outside your home the screen view is coming in the next update"); return }
+        if (PcClient.viaRemote) { startRemote(quality); return }
         setStatus("Connecting…")
         val req = Request.Builder().url("ws://$host:${Prefs.port(ctx)}").build()
         ws = http.newWebSocket(req, object : WebSocketListener() {
@@ -118,6 +118,41 @@ class StreamClient(private val ctx: Context, private val onFrame: (Bitmap) -> Un
         })
     }
 
+    @Volatile private var rtc: RemoteLink? = null
+
+    /** From outside home: the PC sends the screen as real video over WebRTC (much less data). */
+    private fun startRemote(quality: String) {
+        setStatus("Connecting to your PC's screen…")
+        lateinit var link: RemoteLink
+        link = RemoteLink(ctx, Prefs.relay(ctx), Prefs.roomId(ctx),
+            onOpen = { if (quality != "auto") link.sendCtl(JSONObject().put("t", "quality").put("q", quality).toString()) },
+            onText = { text -> onInfo(text) },
+            onClosed = closed@{ why, isFatal ->
+                if (rtc === link) rtc = null
+                main.post { StreamState.live = false }
+                if (closed) return@closed
+                if (isFatal) { fatal = true; setStatus(why); return@closed }
+                setStatus("Reconnecting…")
+                main.postDelayed({ if (!closed && rtc == null) start(StreamState.quality) }, 3000)
+            },
+            onFrame = { bmp -> onFrame(bmp); countFrame(bmp.height) })
+        rtc = link
+        link.start()
+    }
+
+    private fun onInfo(text: String) {
+        val j = try { JSONObject(text) } catch (e: Exception) { return }
+        if (j.optString("t") != "stream_info") return
+        main.post {
+            StreamState.screenW = j.optInt("w", 16)
+            StreamState.screenH = j.optInt("h", 9)
+            StreamState.height = j.optInt("height", 0)
+            StreamState.quality = j.optString("quality", "auto")
+            StreamState.live = true
+            StreamState.status = ""
+        }
+    }
+
     private fun decode(w: WebSocket, data: ByteArray) {
         decoder.post {
             var bytes: ByteArray? = data
@@ -161,7 +196,10 @@ class StreamClient(private val ctx: Context, private val onFrame: (Bitmap) -> Un
 
     private fun setStatus(s: String) = main.post { StreamState.status = s }
 
-    private fun send(j: JSONObject) { ws?.send(j.toString()) }
+    private fun send(j: JSONObject) {
+        val r = rtc
+        if (r != null) r.sendCtl(j.toString()) else ws?.send(j.toString())
+    }
 
     fun setQuality(q: String) {
         StreamQuality.save(ctx, q)
@@ -179,6 +217,8 @@ class StreamClient(private val ctx: Context, private val onFrame: (Bitmap) -> Un
         closed = true
         ws?.close(1000, null)
         ws = null
+        rtc?.close()
+        rtc = null
         main.post { StreamState.live = false; StreamState.fps = 0 }
     }
 

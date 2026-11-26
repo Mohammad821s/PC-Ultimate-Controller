@@ -48,7 +48,7 @@ class ChannelClient:
 
 class RemoteAgent:
     def __init__(self, relay_url, room_id, key, *, is_paired, handle, fast, hello_messages,
-                 add_client, remove_client, log, on_status=None):
+                 add_client, remove_client, log, on_status=None, screen_factory=None):
         self.relay_url = relay_url.rstrip("/")
         self.room_id = room_id
         self.key = key
@@ -60,6 +60,8 @@ class RemoteAgent:
         self.remove_client = remove_client
         self.log = log
         self.on_status = on_status or (lambda s: None)
+        # async () -> object with .track, .info() -> dict, async .command(dict) -> dict|None, .close()
+        self.screen_factory = screen_factory
         self.ws = None
         self.peers = {}                     # relay sid -> RTCPeerConnection
         self.ice = None
@@ -159,6 +161,17 @@ class RemoteAgent:
         if len(self.peers) >= MAX_PEERS:
             await self._send_relay({"t": "auth_fail", "reason": "busy", "to": sid})
             return
+        screen = None
+        if m.get("mode") == "screen":
+            if not self.screen_factory:
+                await self._send_relay({"t": "auth_fail", "reason": "no_screen", "to": sid})
+                return
+            try:
+                screen = await self.screen_factory()
+            except Exception as e:
+                self.log(f"remote: screen unavailable {e!r}")
+                await self._send_relay({"t": "auth_fail", "reason": "no_screen", "to": sid})
+                return
         servers = await self._ice_servers()
         config = RTCConfiguration(iceServers=[
             RTCIceServer(urls=s["urls"], username=s.get("username"), credential=s.get("credential"))
@@ -170,6 +183,27 @@ class RemoteAgent:
 
         @pc.on("datachannel")
         def on_channel(ch):
+            if screen is not None:
+                # the screen connection: touch / quality commands, no broadcasts
+                async def screen_open():
+                    ch.send(json.dumps(screen.info()))
+
+                @ch.on("message")
+                def on_screen_msg(msg):
+                    async def run():
+                        try:
+                            reply = await screen.command(json.loads(msg))
+                            if reply and ch.readyState == "open":
+                                ch.send(json.dumps(reply))
+                        except Exception as e:
+                            self.log(f"remote: screen command error {e!r}")
+                    asyncio.create_task(run())
+
+                if ch.readyState == "open":
+                    asyncio.create_task(screen_open())
+                else:
+                    ch.on("open", lambda: asyncio.create_task(screen_open()))
+                return
             if ch.label == "fast":
                 @ch.on("message")
                 def on_fast(msg):
@@ -202,23 +236,26 @@ class RemoteAgent:
             st = pc.connectionState
             if st == "connected":
                 kind = await self._route(pc)
-                self.log(f"remote: {name} connected ({kind})")
+                what = "screen" if screen is not None else "control"
+                self.log(f"remote: {name} connected, {what} ({kind})")
             if st in ("failed", "closed", "disconnected"):
-                await self._drop(sid, pc, clients)
+                await self._drop(sid, pc, clients, screen)
 
         try:
             await pc.setRemoteDescription(RTCSessionDescription(sdp=m["sdp"], type="offer"))
+            if screen is not None:
+                pc.addTrack(screen.track)
             await pc.setLocalDescription(await pc.createAnswer())  # gathers all candidates
             await self._send_relay({"t": "answer", "sdp": pc.localDescription.sdp, "to": sid})
         except Exception as e:
             self.log(f"remote: answer failed {e!r}")
-            await self._drop(sid, pc, clients)
+            await self._drop(sid, pc, clients, screen)
             return
         # give up if the phone never manages to connect
         await asyncio.sleep(45)
         if pc.connectionState not in ("connected", "closed"):
             self.log(f"remote: {name} could not connect")
-            await self._drop(sid, pc, clients)
+            await self._drop(sid, pc, clients, screen)
 
     async def _route(self, pc):
         """'direct' or 'relay' (TURN), for the log and the phone's status line."""
@@ -239,7 +276,12 @@ class RemoteAgent:
         except Exception as e:
             self.log(f"remote: command error {e!r}")
 
-    async def _drop(self, sid, pc, clients):
+    async def _drop(self, sid, pc, clients, screen=None):
+        if screen is not None:
+            try:
+                screen.close()
+            except Exception:
+                pass
         if self.peers.get(sid) is pc:
             self.peers.pop(sid, None)
         for c in clients:
