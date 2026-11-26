@@ -1014,7 +1014,7 @@ async def client_handler(ws, *_):
 
 import remote  # noqa: E402
 
-RELAY_URL = "wss://puc-relay.mohammad821s.workers.dev"
+RELAY_URL = "wss://puc-relay.erenjeager078.workers.dev"
 remote_agent = None
 
 
