@@ -375,6 +375,67 @@ def app_command(name):
     return True
 
 
+PLAYER_CLASSES = {"Chrome_WidgetWin_1", "ApplicationFrameWindow", "MozillaWindowClass", "Windows.UI.Core.CoreWindow"}
+
+
+def player_windows(limit=4):
+    """Foreground window first, then other visible browser/app windows, top to bottom."""
+    out = []
+    fg = _user32.GetForegroundWindow()
+    if fg:
+        out.append(fg)
+    buf = ctypes.create_unicode_buffer(64)
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def cb(h, _):
+        if len(out) >= limit:
+            return False
+        if h != fg and _user32.IsWindowVisible(h) and not _user32.IsIconic(h):
+            _user32.GetClassNameW(h, buf, 64)
+            if buf.value in PLAYER_CLASSES and _user32.GetWindowTextLengthW(h) > 0:
+                out.append(h)
+        return True
+
+    _user32.EnumWindows(cb, 0)
+    return out
+
+
+def key_combo(mod_vk, vk):
+    """Shift/Ctrl + key through keybd_event (works where SendInput is blocked on this PC)."""
+    kb = _user32.keybd_event
+    kb(mod_vk, 0, 0, 0)
+    kb(vk, 0, 0, 0)
+    time.sleep(0.03)
+    kb(vk, 0, 2, 0)
+    kb(mod_vk, 0, 2, 0)
+
+
+def window_title(hwnd):
+    buf = ctypes.create_unicode_buffer(256)
+    _user32.GetWindowTextW(hwnd, buf, 256)
+    return buf.value
+
+
+def skip_episode(which):
+    """Next/previous episode for players that don't expose it to Windows (Crunchyroll, Netflix, YouTube in a browser)."""
+    fg = _user32.GetForegroundWindow()
+    title = window_title(fg).lower() if fg else ""
+    if "youtube" in title:
+        key_combo(0x10, 0x4E if which == "next" else 0x50)  # Shift+N / Shift+P
+        log(f"skip {which}: youtube shortcut")
+        return True
+    cls = ctypes.create_unicode_buffer(64)
+    if fg:
+        _user32.GetClassNameW(fg, cls, 64)
+    if cls.value not in PLAYER_CLASSES:
+        log(f"skip {which}: foreground is not a player ({cls.value})")
+        return False
+    t0 = time.time()
+    name = run_com(lambda auto: library.press_skip_button(auto, which, [fg]), 5)
+    log(f"skip {which}: button {name!r} in {time.time() - t0:.2f}s ({title[:40]})")
+    return bool(name)
+
+
 async def media_session_command(name):
     """Play/pause/next/previous on the current media session (Spotify, Chrome...)."""
     if MediaManager is None:
@@ -386,10 +447,11 @@ async def media_session_command(name):
             return False
         if name == "playpause":
             return bool(await s.try_toggle_play_pause_async())
+        controls = s.get_playback_info().controls
         if name == "next":
-            return bool(await s.try_skip_next_async())
+            return bool(controls.is_next_enabled) and bool(await s.try_skip_next_async())
         if name == "prev":
-            return bool(await s.try_skip_previous_async())
+            return bool(controls.is_previous_enabled) and bool(await s.try_skip_previous_async())
     except Exception as e:
         log(f"media session error {e}")
     return False
@@ -669,6 +731,8 @@ async def handle(msg):
         a = msg.get("a", "")
         if a in ("playpause", "next", "prev") and await media_session_command(a):
             pass
+        elif a in ("next", "prev") and await loop.run_in_executor(None, skip_episode, a):
+            pass
         elif a in APPCOMMANDS and app_command(a):
             pass
         else:
@@ -777,6 +841,132 @@ async def authorize(ws, first, peer):
     return True, ""
 
 
+# ---------------------------------------------------------------- screen streaming
+
+import concurrent.futures  # noqa: E402
+
+import screen  # noqa: E402
+
+_capture_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="capture")
+_capturer = None
+stream_lock = asyncio.Lock()
+_active_stream = {"ws": None}
+
+
+def _get_capturer():
+    global _capturer
+    if _capturer is None:
+        _capturer = screen.Capturer()
+    return _capturer
+
+
+async def stream_session(ws, first, peer):
+    """One phone watching the screen. Frames are binary JPEG messages; the phone acks each one.
+    At most two frames are in flight, so a slow phone or network lowers the frame rate, not the delay."""
+    loop = asyncio.get_running_loop()
+    if not screen.AVAILABLE:
+        await ws.send(json.dumps({"t": "stream_error", "reason": "missing_modules"}))
+        return
+    if stream_lock.locked() and _active_stream.get("ws") is not None:
+        # a newer viewer (the same phone reconnecting, or another one) takes over
+        try:
+            await _active_stream["ws"].close()
+        except Exception:
+            pass
+    try:
+        await asyncio.wait_for(stream_lock.acquire(), timeout=4)
+    except asyncio.TimeoutError:
+        await ws.send(json.dumps({"t": "stream_error", "reason": "busy"}))
+        return
+    _active_stream["ws"] = ws
+    try:
+        await _stream_body(ws, first, peer, loop)
+    finally:
+        if _active_stream.get("ws") is ws:
+            _active_stream["ws"] = None
+        stream_lock.release()
+
+
+async def _stream_body(ws, first, peer, loop):
+    cap = await loop.run_in_executor(_capture_pool, _get_capturer)
+    state = {"quality": str(first.get("quality") or "auto"), "inflight": [], "force": True, "open": True}
+    auto_q = screen.AutoQuality()
+    wake = asyncio.Event()
+    log(f"stream start {peer} quality={state['quality']}")
+
+    def settings():
+        if state["quality"] in screen.PRESETS:
+            return screen.PRESETS[state["quality"]]
+        return auto_q.current()
+
+    async def info():
+        h, q = settings()
+        await ws.send(json.dumps({"t": "stream_info", "w": cap.width, "h": cap.height,
+                                  "quality": state["quality"], "height": min(h, cap.height)}))
+
+    async def receiver():
+        async for raw in ws:
+            if isinstance(raw, bytes):
+                continue
+            try:
+                m = json.loads(raw)
+                t = m.get("t")
+                if t == "ack":
+                    if state["inflight"]:
+                        auto_q.acked(time.time() - state["inflight"].pop(0))
+                    wake.set()
+                elif t == "quality":
+                    state["quality"] = str(m.get("q") or "auto")
+                    state["force"] = True
+                    await info()
+                    wake.set()
+                elif t == "abs":
+                    x, y = cap.to_screen(m.get("x", 0), m.get("y", 0))
+                    _user32.SetCursorPos(x, y)
+                elif t == "tap":
+                    x, y = cap.to_screen(m.get("x", 0), m.get("y", 0))
+                    _user32.SetCursorPos(x, y)
+                    await loop.run_in_executor(None, mouse_click, m.get("b", "left"))
+                else:
+                    await handle(m)
+            except Exception as e:
+                log(f"stream command error: {e}")
+        state["open"] = False
+        wake.set()
+
+    rx = asyncio.create_task(receiver())
+    try:
+        await info()
+        while state["open"]:
+            if len(state["inflight"]) >= 2:
+                wake.clear()
+                try:
+                    await asyncio.wait_for(wake.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    state["inflight"].clear()  # lost acks: start over
+                continue
+            h, q = settings()
+            force, state["force"] = state["force"], False
+            t0 = time.time()
+            frame = await loop.run_in_executor(_capture_pool, cap.grab, h, q, force)
+            if frame is None:
+                await asyncio.sleep(0.03)
+                continue
+            state["inflight"].append(time.time())
+            auto_q.sent()
+            await ws.send(frame)
+            if state["quality"] == "auto" and auto_q.step():
+                state["force"] = True
+                await info()
+            # cap at ~30 fps
+            await asyncio.sleep(max(0.0, 1 / 30 - (time.time() - t0)))
+    except Exception as e:
+        log(f"stream ended: {e}")
+    finally:
+        rx.cancel()
+        log(f"stream stop {peer}")
+
+
 async def client_handler(ws, *_):
     peer = getattr(ws, "remote_address", ("?",))[0]
     try:
@@ -792,6 +982,9 @@ async def client_handler(ws, *_):
         except Exception:
             pass
         await ws.close()
+        return
+    if first.get("mode") == "stream":
+        await stream_session(ws, first, peer)
         return
     print("Phone connected:", peer)
     log(f"phone connected {peer}")

@@ -72,6 +72,7 @@ fun HomeScreen(
     onEditShortcut: (Shortcut) -> Unit,
     onFloating: () -> Unit,
     onConnect: () -> Unit,
+    onScreen: () -> Unit = {},
 ) {
     var showKeyboard by remember { mutableStateOf(false) }
     val cs = MaterialTheme.colorScheme
@@ -85,7 +86,7 @@ fun HomeScreen(
             .padding(horizontal = 18.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Header(onSettings, onConnect)
+        Header(onSettings, onConnect, onScreen)
         NowPlayingCard()
         ShortcutsRow(onAddShortcut, onEditShortcut)
         TouchpadPanel(Modifier.weight(1f))
@@ -114,7 +115,7 @@ fun HomeScreen(
 }
 
 @Composable
-private fun Header(onSettings: () -> Unit, onConnect: () -> Unit) {
+private fun Header(onSettings: () -> Unit, onConnect: () -> Unit, onScreen: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -133,6 +134,8 @@ private fun Header(onSettings: () -> Unit, onConnect: () -> Unit) {
                 }
             }
         }
+        IconTile(R.drawable.ic_screen, "Show PC screen", onClick = onScreen)
+        Spacer(Modifier.width(8.dp))
         IconTile(R.drawable.ic_settings, "Settings", onClick = onSettings)
     }
 }
@@ -301,7 +304,7 @@ private fun ShortcutsRow(onAdd: () -> Unit, onEdit: (Shortcut) -> Unit) {
 }
 
 @Composable
-private fun TouchpadPanel(modifier: Modifier) {
+internal fun TouchpadPanel(modifier: Modifier) {
     val cs = MaterialTheme.colorScheme
     val bg = cs.surface.toArgb()
     val dots = cs.outlineVariant.toArgb()
@@ -333,7 +336,7 @@ private fun TouchpadPanel(modifier: Modifier) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun KeyboardSheet(onDismiss: () -> Unit) {
+internal fun KeyboardSheet(onDismiss: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     var text by remember { mutableStateOf("") }
     val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)

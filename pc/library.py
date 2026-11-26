@@ -397,3 +397,61 @@ def set_volume(level):
     except Exception as e:
         _log(f"set volume failed: {e}")
         return False
+
+
+# ---------------------------------------------------------------- next / previous episode buttons
+
+SKIP_NAMES = {
+    "next": ["next episode", "skip to next", "next video", "next (", "play next", "الحلقة التالية", "التالي"],
+    "prev": ["previous episode", "previous video", "previous (", "prior episode", "الحلقة السابقة", "السابق"],
+}
+_UIA_NAME, _UIA_BUTTON_TYPE, _UIA_CONTROLTYPE = 30005, 50000, 30003
+_SCOPE_DESCENDANTS = 4
+_IGNORE_CASE_SUBSTRING = 3
+
+
+def _wake_player():
+    """A 1px mouse jiggle makes web players show their (hidden) controls."""
+    import ctypes
+    u = ctypes.windll.user32
+    u.mouse_event(0x0001, 1, 0, 0, 0)
+    time.sleep(0.02)
+    u.mouse_event(0x0001, -1, 0, 0, 0)
+
+
+def press_skip_button(auto, which, hwnds):
+    """Finds a Next/Previous episode button in the given windows (UI Automation) and presses it.
+    Runs on the COM thread. Returns the button name, or None."""
+    import importlib
+    uia = importlib.import_module("uiautomation.uiautomation")._AutomationClient.instance().IUIAutomation
+    names = SKIP_NAMES[which]
+    cond = None
+    for n in names:
+        c = uia.CreatePropertyConditionEx(_UIA_NAME, n, _IGNORE_CASE_SUBSTRING)
+        cond = c if cond is None else uia.CreateOrCondition(cond, c)
+    cond = uia.CreateAndCondition(uia.CreatePropertyCondition(_UIA_CONTROLTYPE, _UIA_BUTTON_TYPE), cond)
+    _wake_player()
+    time.sleep(0.25)
+    for hwnd in hwnds:
+        try:
+            root = uia.ElementFromHandle(hwnd)
+            found = root.FindAll(_SCOPE_DESCENDANTS, cond)
+        except Exception as e:
+            _log(f"skip search error: {e}")
+            continue
+        best = None
+        for i in range(found.Length if found else 0):
+            el = found.GetElement(i)
+            nm = (el.CurrentName or "").strip().lower()
+            # prefer the most specific label ("next episode" over a bare "next")
+            rank = next((k for k, n in enumerate(names) if n in nm), len(names))
+            if best is None or rank < best[0]:
+                best = (rank, el, nm)
+        if best:
+            ctl = auto.Control.CreateControlFromElement(best[1])
+            try:
+                ctl.GetInvokePattern().Invoke()
+            except Exception:
+                ctl.Click(simulateMove=False)
+            return best[2]
+    return None

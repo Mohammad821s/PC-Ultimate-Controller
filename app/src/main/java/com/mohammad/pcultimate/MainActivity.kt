@@ -57,6 +57,7 @@ class MainActivity : ComponentActivity(), PcClient.Listener {
                             onEditShortcut = { screen = Screen.Editor(it) },
                             onFloating = { openFloating() },
                             onConnect = { screen = Screen.Settings },
+                            onScreen = { startActivity(Intent(this@MainActivity, StreamActivity::class.java)) },
                         )
                         Screen.Settings -> SettingsScreen(onBack = { screen = Screen.Home })
                         is Screen.Editor -> EditorScreen(s.shortcut, onDone = { screen = Screen.Home })

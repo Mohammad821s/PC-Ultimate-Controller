@@ -5,3 +5,5 @@ winrt-Windows.Storage.Streams
 winrt-Windows.Foundation
 uiautomation
 pycaw
+mss
+pillow

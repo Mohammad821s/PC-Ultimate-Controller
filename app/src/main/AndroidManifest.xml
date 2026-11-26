@@ -29,6 +29,17 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".StreamActivity"
+            android:exported="false"
+            android:label="PC screen"
+            android:launchMode="singleTask"
+            android:taskAffinity=".screen"
+            android:resizeableActivity="true"
+            android:supportsPictureInPicture="true"
+            android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboardHidden|uiMode|density"
+            android:windowSoftInputMode="adjustResize" />
+
         <service
             android:name=".PcService"
             android:exported="false"
