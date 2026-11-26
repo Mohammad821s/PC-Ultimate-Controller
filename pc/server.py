@@ -167,18 +167,6 @@ def _legacy(i):
         _user32.keybd_event(k.wVk & 0xFF, 0, k.dwFlags, 0)
 
 
-def release_protected_focus():
-    """Windows system pop-ups (volume, network, Start) reject simulated input while they have focus.
-    Moving focus back to the desktop closes them so input works again."""
-    try:
-        shell = _user32.GetShellWindow()
-        if shell:
-            _user32.SwitchToThisWindow(shell, True)
-            time.sleep(0.05)
-    except Exception as e:
-        log(f"focus reset failed {e}")
-
-
 def _raw_send(inputs):
     arr = (INPUT * len(inputs))(*inputs)
     return _send_input(len(inputs), arr, ctypes.sizeof(INPUT))
@@ -188,17 +176,10 @@ def _send(*inputs):
     if not _send_input:
         return 0
     n = _raw_send(inputs)
-    if n == len(inputs):
-        return n
-    log(f"SendInput rejected ({n}/{len(inputs)}), error {ctypes.get_last_error()}; resetting focus and retrying")
-    release_protected_focus()
-    rest = inputs[n:]
-    m = _raw_send(rest)
-    if m != len(rest):
-        log(f"retry rejected ({m}/{len(rest)}); using legacy API")
-        for i in rest[m:]:
+    if n != len(inputs):
+        for i in inputs[n:]:
             _legacy(i)
-    return n + m
+    return n
 
 
 def _mouse(flags, dx=0, dy=0, data=0):
@@ -218,21 +199,19 @@ def mouse_move(dx, dy):
 
 
 def mouse_click(button):
-    # Separate press and release with a short gap: some apps ignore a press+release sent in one batch.
+    # mouse_event is accepted on this PC where SendInput button events are rejected
     down, up = BUTTONS.get(button, BUTTONS["left"])
-    sent = _send(_mouse(down))
+    if not _user32:
+        return
+    _user32.mouse_event(down, 0, 0, 0, 0)
     time.sleep(0.03)
-    released = _send(_mouse(up))
-    if sent and not released:
-        # never leave the button held down (that turns the next move into a drag)
-        release_protected_focus()
-        _legacy(_mouse(up))
-    log(f"click {button} -> down {sent}, up {released}")
+    _user32.mouse_event(up, 0, 0, 0, 0)
 
 
 def mouse_button(button, pressed):
     down, up = BUTTONS.get(button, BUTTONS["left"])
-    _send(_mouse(down if pressed else up))
+    if _user32:
+        _user32.mouse_event(down if pressed else up, 0, 0, 0, 0)
 
 
 def mouse_scroll(steps, horizontal=False):
@@ -244,10 +223,12 @@ def press_key(name):
     if vk is None:
         return
     ext = EXTENDED if vk in EXTENDED_KEYS else 0
-    scan = _user32.MapVirtualKeyW(vk, 0) if _user32 else 0
-    _send(_key(vk, scan, ext))
+    if not _user32:
+        return
+    scan = _user32.MapVirtualKeyW(vk, 0) & 0xFF
+    _user32.keybd_event(vk, scan, ext, 0)
     time.sleep(0.02)
-    _send(_key(vk, scan, ext | KEYUP))
+    _user32.keybd_event(vk, scan, ext | KEYUP, 0)
 
 
 WM_APPCOMMAND = 0x0319
@@ -286,25 +267,48 @@ async def media_session_command(name):
     return False
 
 
-def post_text(text):
-    """Fallback for typing: post characters straight to the focused control."""
-    if not _user32:
+CF_UNICODETEXT = 13
+GMEM_MOVEABLE = 0x0002
+
+
+def _clipboard_set(text):
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.GlobalAlloc.restype = ctypes.c_void_p
+    k32.GlobalAlloc.argtypes = (wintypes.UINT, ctypes.c_size_t)
+    k32.GlobalLock.restype = ctypes.c_void_p
+    k32.GlobalLock.argtypes = (ctypes.c_void_p,)
+    k32.GlobalUnlock.argtypes = (ctypes.c_void_p,)
+    _user32.SetClipboardData.argtypes = (wintypes.UINT, ctypes.c_void_p)
+    _user32.OpenClipboard.argtypes = (wintypes.HWND,)
+    data = text.encode("utf-16-le") + b"\x00\x00"
+    for _ in range(10):
+        if _user32.OpenClipboard(None):
+            break
+        time.sleep(0.02)
+    else:
+        return False
+    try:
+        _user32.EmptyClipboard()
+        h = k32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+        ptr = k32.GlobalLock(h)
+        ctypes.memmove(ptr, data, len(data))
+        k32.GlobalUnlock(h)
+        _user32.SetClipboardData(CF_UNICODETEXT, h)
+        return True
+    finally:
+        _user32.CloseClipboard()
+
+
+def paste_text(text):
+    """Typing fallback: put the text on the clipboard and press Ctrl+V."""
+    if not _user32 or not _clipboard_set(text):
         return
-    class GUITHREADINFO(ctypes.Structure):
-        _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD), ("hwndActive", wintypes.HWND),
-                    ("hwndFocus", wintypes.HWND), ("hwndCapture", wintypes.HWND), ("hwndMenuOwner", wintypes.HWND),
-                    ("hwndMoveSize", wintypes.HWND), ("hwndCaret", wintypes.HWND), ("rcCaret", wintypes.RECT)]
-    info = GUITHREADINFO(cbSize=ctypes.sizeof(GUITHREADINFO))
-    target = None
-    if _user32.GetGUIThreadInfo(0, ctypes.byref(info)):
-        target = info.hwndFocus or info.hwndActive
-    target = target or _user32.GetForegroundWindow()
-    for ch in text:
-        if ch == "\n":
-            _user32.PostMessageW(target, 0x0100, 0x0D, 0)
-            _user32.PostMessageW(target, 0x0101, 0x0D, 0)
-        else:
-            _user32.PostMessageW(target, 0x0102, ord(ch), 0)
+    ctrl, v = 0x11, 0x56
+    _user32.keybd_event(ctrl, 0, 0, 0)
+    _user32.keybd_event(v, 0, 0, 0)
+    time.sleep(0.02)
+    _user32.keybd_event(v, 0, KEYUP, 0)
+    _user32.keybd_event(ctrl, 0, KEYUP, 0)
 
 
 def type_text(text):
@@ -316,8 +320,8 @@ def type_text(text):
             events += [_key(VK["enter"]), _key(VK["enter"], 0, KEYUP)]
             continue
         events += [_key(0, unit, UNICODE), _key(0, unit, UNICODE | KEYUP)]
-    if events and _send(*events) == 0:
-        post_text(text)
+    if events and _raw_send(events) == 0:
+        paste_text(text.replace("\n", "\r\n"))
 
 
 # ---------------------------------------------------------------- shortcuts
