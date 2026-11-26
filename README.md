@@ -19,7 +19,7 @@ Every push to `main` builds a new release automatically.
 
 **PC (Windows 10/11, Python 3.9+)**
 1. Download `PC-Server.zip` and extract it somewhere permanent (e.g. `Documents\PC-Ultimate-Controller`).
-2. Run `setup.bat`. It installs what it needs, adds itself to Windows startup and starts the server.
+2. Run `setup.bat` and accept the administrator prompt. It installs what it needs, registers a startup task with administrator rights (so clicks also work on the taskbar and admin windows) and starts the server.
 3. A window shows the PC address and the PIN. If Windows Firewall asks, allow **Private and Public** networks.
 
 **Phone**
