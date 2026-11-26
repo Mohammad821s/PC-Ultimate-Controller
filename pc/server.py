@@ -990,9 +990,8 @@ async def client_handler(ws, *_):
     log(f"phone connected {peer}")
     clients.add(ws)
     authed_ips[peer] = authed_ips.get(peer, 0) + 1
-    await ws.send(json.dumps({"t": "hello", "name": socket.gethostname(), "udp": INPUT_PORT, "version": VERSION}))
-    await ws.send(json.dumps(public_media(last_media, True), ensure_ascii=False))
-    await ws.send(json.dumps(volume_msg()))
+    for m in hello_messages(remote_access=False):
+        await ws.send(json.dumps(m, ensure_ascii=False))
     try:
         async for raw in ws:
             try:
@@ -1011,6 +1010,55 @@ async def client_handler(ws, *_):
         print("Phone disconnected:", peer)
 
 
+# ---------------------------------------------------------------- remote access (any network)
+
+import remote  # noqa: E402
+
+RELAY_URL = "wss://puc-relay.mohammad821s.workers.dev"
+remote_agent = None
+
+
+def relay_url():
+    return CONFIG.get("relay_url") or RELAY_URL
+
+
+def remote_identity():
+    ident = CONFIG.get("remote")
+    if not ident or not ident.get("id") or not ident.get("key"):
+        ident = remote.new_identity()
+        CONFIG["remote"] = ident
+        save_config()
+    return ident
+
+
+def hello_messages(remote_access):
+    hello = {"t": "hello", "name": socket.gethostname(), "udp": INPUT_PORT, "version": VERSION,
+             "remote": remote_access}
+    if remote.AVAILABLE:
+        hello["relay"] = relay_url()
+        hello["rid"] = remote_identity()["id"]
+    return [hello, public_media(last_media, True), volume_msg()]
+
+
+def start_remote():
+    global remote_agent
+    if not remote.AVAILABLE or not relay_url():
+        log("remote access off (aiortc missing or no relay)")
+        return
+    ident = remote_identity()
+    remote_agent = remote.RemoteAgent(
+        relay_url(), ident["id"], ident["key"],
+        is_paired=lambda token: known_device(token_hash(token)) is not None,
+        handle=handle,
+        fast=lambda t: fast_input(t),
+        hello_messages=lambda: hello_messages(remote_access=True),
+        add_client=clients.add,
+        remove_client=clients.discard,
+        log=log,
+    )
+    asyncio.create_task(remote_agent.run())
+
+
 class FastInput(asyncio.DatagramProtocol):
     """Pointer movement and scrolling over UDP: no head-of-line blocking, lowest latency.
     Packets: b"m,dx,dy" or b"s,steps". Accepted only from phones with an open, PIN-checked connection."""
@@ -1019,13 +1067,17 @@ class FastInput(asyncio.DatagramProtocol):
         if addr[0] not in authed_ips:
             return
         try:
-            parts = data.decode("ascii").split(",")
-            if parts[0] == "m":
-                mouse_move(int(parts[1]), int(parts[2]))
-            elif parts[0] == "s":
-                mouse_scroll(int(parts[1]))
+            fast_input(data.decode("ascii"))
         except Exception:
             pass
+
+
+def fast_input(text):
+    parts = text.split(",")
+    if parts[0] == "m":
+        mouse_move(int(parts[1]), int(parts[2]))
+    elif parts[0] == "s":
+        mouse_scroll(int(parts[1]))
 
 
 class Discovery(asyncio.DatagramProtocol):
@@ -1075,6 +1127,7 @@ async def main():
                         "On your phone open the app and tap Find my PC.\n"
                         "A box will appear here asking you to allow the phone - choose Yes.")
         asyncio.create_task(media_watcher())
+        start_remote()
         await asyncio.Future()
 
 

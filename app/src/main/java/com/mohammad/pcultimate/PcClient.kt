@@ -96,6 +96,11 @@ object Prefs {
     fun deviceName(c: Context): String =
         (try { android.provider.Settings.Global.getString(c.contentResolver, "device_name") } catch (e: Exception) { null })
             ?.takeIf { it.isNotBlank() } ?: "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}"
+    fun relay(c: Context): String = p(c).getString("relay", "") ?: ""
+    fun roomId(c: Context): String = p(c).getString("rid", "") ?: ""
+    fun saveRemote(c: Context, relay: String, rid: String) {
+        p(c).edit().putString("relay", relay).putString("rid", rid).apply()
+    }
     fun saveSens(c: Context, v: Float) { p(c).edit().putFloat("sens", v).apply() }
 }
 
@@ -144,6 +149,10 @@ object PcClient {
     val listeners = CopyOnWriteArrayList<Listener>()
 
     @Volatile private var ws: WebSocket? = null
+    @Volatile private var remote: RemoteLink? = null
+    /** true while connected from outside the home network (WebRTC through the relay) */
+    @Volatile var viaRemote = false
+        private set
     @Volatile var connected = false
         private set
     @Volatile var statusText = "Not connected"
@@ -200,15 +209,26 @@ object PcClient {
         }
     }
 
+    private fun canGoRemote(c: Context) = Prefs.relay(c).isNotBlank() && Prefs.roomId(c).isNotBlank()
+
+    private fun onWifi(c: Context): Boolean = try {
+        val cm = c.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+        caps != null && (caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ||
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET))
+    } catch (e: Exception) { true }
+
     @Synchronized
     fun connect() {
         val c = appCtx ?: return
-        if (ws != null) return
+        if (ws != null || remote != null) return
         val host = Prefs.host(c)
         if (host.isBlank()) {
-            setStatus(false, "Set up your PC to connect")
+            if (canGoRemote(c)) startRemote(c) else setStatus(false, "Set up your PC to connect")
             return
         }
+        // on mobile data the home address can't work: go straight to the remote path
+        if (!onWifi(c) && canGoRemote(c)) { startRemote(c); return }
         setStatus(false, "Connecting…")
         val request = Request.Builder().url("ws://$host:${Prefs.port(c)}").build()
         ws = http.newWebSocket(request, object : WebSocketListener() {
@@ -217,15 +237,40 @@ object PcClient {
                 Prefs.pin(c).takeIf { it.isNotBlank() }?.let { auth.put("pin", it) }
                 webSocket.send(auth.toString())
             }
-            override fun onMessage(webSocket: WebSocket, text: String) = handle(webSocket, text)
+            override fun onMessage(webSocket: WebSocket, text: String) = handle(text) { webSocket.send(it) }
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(1000, null) }
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 dropped(webSocket, if (badPin) failText else "Disconnected")
             }
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                // not at home (or the PC is off): try from outside if this phone knows the way
+                if (!badPin && !connected && canGoRemote(c)) {
+                    synchronized(this@PcClient) { if (ws === webSocket) ws = null }
+                    startRemote(c)
+                    return
+                }
                 dropped(webSocket, if (badPin) failText else "Can't reach your PC")
             }
         })
+    }
+
+    @Synchronized
+    private fun startRemote(c: Context) {
+        if (remote != null) return
+        setStatus(false, "Connecting from outside your home…")
+        lateinit var link: RemoteLink
+        link = RemoteLink(c, Prefs.relay(c), Prefs.roomId(c),
+            onOpen = { viaRemote = true },
+            onText = { text -> handle(text) { link.sendCtl(it) } },
+            onClosed = { why, fatal ->
+                synchronized(this) { if (remote === link) remote = null }
+                viaRemote = false
+                if (fatal) { badPin = true; failText = why }
+                setStatus(false, why)
+                if (!fatal) main.postDelayed({ if (!connected && listeners.isNotEmpty()) connect() }, 5000)
+            })
+        remote = link
+        link.start()
     }
 
     private fun dropped(w: WebSocket, why: String) {
@@ -239,11 +284,12 @@ object PcClient {
 
     fun reconnect() {
         badPin = false
-        synchronized(this) { ws?.cancel(); ws = null }
+        synchronized(this) { ws?.cancel(); ws = null; remote?.close(); remote = null }
+        viaRemote = false
         connect()
     }
 
-    private fun handle(w: WebSocket, text: String) {
+    private fun handle(text: String, reply: (String) -> Unit) {
         val j = try { JSONObject(text) } catch (e: Exception) { return }
         when (j.optString("t")) {
             "hello" -> {
@@ -254,8 +300,13 @@ object PcClient {
                 val host = appCtx?.let { Prefs.host(it) } ?: ""
                 udpHandler.post { udpTarget = try { InetAddress.getByName(host) } catch (e: Exception) { null } }
                 main.post { PcState.pcName = name; PcState.pcVersion = version }
-                setStatus(true, "Connected")
-                while (true) { val s = pending.poll() ?: break; w.send(s) }
+                val isRemote = j.optBoolean("remote")
+                if (!isRemote) {
+                    val relay = j.optString("relay"); val rid = j.optString("rid")
+                    if (relay.isNotBlank() && rid.isNotBlank()) appCtx?.let { Prefs.saveRemote(it, relay, rid) }
+                }
+                setStatus(true, if (isRemote) "Connected from outside" else "Connected")
+                while (true) { val s = pending.poll() ?: break; reply(s) }
                 send(JSONObject().put("t", "list_shortcuts"))
             }
             "pair_wait" -> setStatus(false, "Approve this phone on your PC")
@@ -318,13 +369,16 @@ object PcClient {
     private fun send(o: JSONObject, queueIfOffline: Boolean = true) {
         val s = o.toString()
         val w = ws
-        if (connected && w != null) w.send(s) else {
+        val r = remote
+        val sent = connected && (if (w != null) w.send(s) else r?.sendCtl(s) == true)
+        if (!sent) {
             if (queueIfOffline && pending.size < 10) pending.add(s)
             connect()
         }
     }
 
     private fun sendFast(payload: String): Boolean {
+        remote?.let { if (it.open) return it.sendFast(payload) }
         val target = udpTarget
         if (!connected || target == null || udpPort == 0) return false
         val port = udpPort

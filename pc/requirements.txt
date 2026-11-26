@@ -7,3 +7,4 @@ uiautomation
 pycaw
 mss
 pillow
+aiortc

@@ -65,6 +65,7 @@ class StreamClient(private val ctx: Context, private val onFrame: (Bitmap) -> Un
         StreamState.quality = quality
         val host = Prefs.host(ctx)
         if (host.isBlank()) { setStatus("Set up your PC first"); return }
+        if (PcClient.viaRemote) { fatal = true; setStatus("From outside your home the screen view is coming in the next update"); return }
         setStatus("Connecting…")
         val req = Request.Builder().url("ws://$host:${Prefs.port(ctx)}").build()
         ws = http.newWebSocket(req, object : WebSocketListener() {
