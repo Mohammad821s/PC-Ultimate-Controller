@@ -36,7 +36,7 @@ Every push to `main` builds a new release automatically.
   - `{"type": "uri", "uri": "..."}` opens a link such as an Epic Games launcher link
   - `{"type": "command", "command": "..."}` runs a command
 
-Restart the server (`stop.bat`, then `setup.bat` or `start.bat`) after editing.
+Restart the server with `restart.bat` after editing (no admin prompt needed).
 
 ## Notes
 
