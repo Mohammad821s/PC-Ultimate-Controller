@@ -134,7 +134,34 @@ VK = {
 }
 EXTENDED_KEYS = {0x25, 0x26, 0x27, 0x28, 0xB3, 0xB0, 0xB1, 0xAF, 0xAE, 0xAD}
 
-_send_input = ctypes.windll.user32.SendInput if sys.platform == "win32" else None
+if sys.platform == "win32":
+    _user32 = ctypes.WinDLL("user32", use_last_error=True)
+    _send_input = _user32.SendInput
+    _send_input.argtypes = (wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
+    _send_input.restype = wintypes.UINT
+    _user32.mouse_event.argtypes = (wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ULONG_PTR)
+    _user32.keybd_event.argtypes = (wintypes.BYTE, wintypes.BYTE, wintypes.DWORD, ULONG_PTR)
+    _user32.FindWindowW.restype = wintypes.HWND
+    _user32.FindWindowW.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR)
+    _user32.GetForegroundWindow.restype = wintypes.HWND
+    _user32.SendMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+    _user32.PostMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+    _user32.MapVirtualKeyW.argtypes = (wintypes.UINT, wintypes.UINT)
+    _user32.MapVirtualKeyW.restype = wintypes.UINT
+else:
+    _user32 = _send_input = None
+
+
+def _legacy(i):
+    """Fallback through the older mouse_event/keybd_event APIs."""
+    if i.type == INPUT_MOUSE:
+        m = i.u.mi
+        _user32.mouse_event(m.dwFlags, m.dx & 0xFFFFFFFF, m.dy & 0xFFFFFFFF, m.mouseData, 0)
+    else:
+        k = i.u.ki
+        if k.dwFlags & UNICODE:
+            return
+        _user32.keybd_event(k.wVk & 0xFF, 0, k.dwFlags, 0)
 
 
 def _send(*inputs):
@@ -143,7 +170,9 @@ def _send(*inputs):
     arr = (INPUT * len(inputs))(*inputs)
     n = _send_input(len(inputs), arr, ctypes.sizeof(INPUT))
     if n != len(inputs):
-        log(f"SendInput blocked ({n}/{len(inputs)}), error {ctypes.GetLastError()}")
+        log(f"SendInput failed ({n}/{len(inputs)}), error {ctypes.get_last_error()}, size {ctypes.sizeof(INPUT)}; using fallback")
+        for i in inputs[n:]:
+            _legacy(i)
     return n
 
 
@@ -186,7 +215,67 @@ def press_key(name):
     if vk is None:
         return
     ext = EXTENDED if vk in EXTENDED_KEYS else 0
-    _send(_key(vk, 0, ext), _key(vk, 0, ext | KEYUP))
+    scan = _user32.MapVirtualKeyW(vk, 0) if _user32 else 0
+    _send(_key(vk, scan, ext))
+    time.sleep(0.02)
+    _send(_key(vk, scan, ext | KEYUP))
+
+
+WM_APPCOMMAND = 0x0319
+APPCOMMANDS = {"mute": 8, "voldown": 9, "volup": 10, "next": 11, "prev": 12, "playpause": 14}
+
+
+def app_command(name):
+    """Media/volume through WM_APPCOMMAND to the taskbar: no simulated key press needed."""
+    cmd = APPCOMMANDS.get(name)
+    if cmd is None or not _user32:
+        return False
+    hwnd = _user32.FindWindowW("Shell_TrayWnd", None)
+    if not hwnd:
+        return False
+    _user32.SendMessageW(hwnd, WM_APPCOMMAND, hwnd, cmd << 16)
+    return True
+
+
+async def media_session_command(name):
+    """Play/pause/next/previous on the current media session (Spotify, Chrome...)."""
+    if MediaManager is None:
+        return False
+    try:
+        mgr = await MediaManager.request_async()
+        s = mgr.get_current_session()
+        if s is None:
+            return False
+        if name == "playpause":
+            return bool(await s.try_toggle_play_pause_async())
+        if name == "next":
+            return bool(await s.try_skip_next_async())
+        if name == "prev":
+            return bool(await s.try_skip_previous_async())
+    except Exception as e:
+        log(f"media session error {e}")
+    return False
+
+
+def post_text(text):
+    """Fallback for typing: post characters straight to the focused control."""
+    if not _user32:
+        return
+    class GUITHREADINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD), ("hwndActive", wintypes.HWND),
+                    ("hwndFocus", wintypes.HWND), ("hwndCapture", wintypes.HWND), ("hwndMenuOwner", wintypes.HWND),
+                    ("hwndMoveSize", wintypes.HWND), ("hwndCaret", wintypes.HWND), ("rcCaret", wintypes.RECT)]
+    info = GUITHREADINFO(cbSize=ctypes.sizeof(GUITHREADINFO))
+    target = None
+    if _user32.GetGUIThreadInfo(0, ctypes.byref(info)):
+        target = info.hwndFocus or info.hwndActive
+    target = target or _user32.GetForegroundWindow()
+    for ch in text:
+        if ch == "\n":
+            _user32.PostMessageW(target, 0x0100, 0x0D, 0)
+            _user32.PostMessageW(target, 0x0101, 0x0D, 0)
+        else:
+            _user32.PostMessageW(target, 0x0102, ord(ch), 0)
 
 
 def type_text(text):
@@ -198,8 +287,8 @@ def type_text(text):
             events += [_key(VK["enter"]), _key(VK["enter"], 0, KEYUP)]
             continue
         events += [_key(0, unit, UNICODE), _key(0, unit, UNICODE | KEYUP)]
-    if events:
-        _send(*events)
+    if events and _send(*events) == 0:
+        post_text(text)
 
 
 # ---------------------------------------------------------------- shortcuts
@@ -408,7 +497,12 @@ async def handle(msg):
         type_text(msg.get("s", ""))
     elif t == "media":
         a = msg.get("a", "")
-        press_key("f" if a == "fullscreen" else a)
+        if a in ("playpause", "next", "prev") and await media_session_command(a):
+            pass
+        elif a in APPCOMMANDS and app_command(a):
+            pass
+        else:
+            press_key("f" if a == "fullscreen" else a)
     elif t == "shortcut":
         await loop.run_in_executor(None, run_shortcut, msg.get("id", ""))
 
@@ -477,7 +571,25 @@ class Discovery(asyncio.DatagramProtocol):
             self.transport.sendto(reply, addr)
 
 
+PID_PATH = os.path.join(HERE, "server.pid")
+
+
+def replace_old_instance():
+    try:
+        with open(PID_PATH) as f:
+            old = int(f.read().strip())
+        if old != os.getpid():
+            subprocess.run(["taskkill", "/PID", str(old), "/F"], capture_output=True, creationflags=CREATE_NO_WINDOW)
+            time.sleep(1.0)
+    except Exception:
+        pass
+    with open(PID_PATH, "w") as f:
+        f.write(str(os.getpid()))
+
+
 async def main():
+    replace_old_instance()
+    log("server started")
     loop = asyncio.get_running_loop()
     try:
         await loop.create_datagram_endpoint(Discovery, local_addr=("0.0.0.0", DISCOVERY_PORT))

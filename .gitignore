@@ -5,3 +5,4 @@ local.properties
 pc/config.json
 pc/__pycache__/
 server.log
+server.pid
