@@ -124,7 +124,11 @@ class RemoteAgent:
             servers = [{"urls": ["stun:stun.cloudflare.com:3478"]}]
         finally:
             self.turn_waiters.pop(rid, None)
-        self.ice, self.ice_at = servers, time.time()
+        has_turn = any("turn:" in u or "turns:" in u for sv in servers for u in
+                       (sv.get("urls") if isinstance(sv.get("urls"), list) else [sv.get("urls", "")]))
+        # without TURN, ask again in 10 minutes instead of keeping the answer for hours
+        self.ice = servers
+        self.ice_at = time.time() if has_turn else time.time() - TURN_REFRESH_S + 600
         return servers
 
     async def _on_relay(self, m):
