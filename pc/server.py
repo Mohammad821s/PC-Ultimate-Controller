@@ -146,6 +146,7 @@ if sys.platform == "win32":
     _user32.GetForegroundWindow.restype = wintypes.HWND
     _user32.SendMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
     _user32.PostMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+    _user32.GetGUIThreadInfo.argtypes = (wintypes.DWORD, ctypes.c_void_p)
     _user32.MapVirtualKeyW.argtypes = (wintypes.UINT, wintypes.UINT)
     _user32.MapVirtualKeyW.restype = wintypes.UINT
     _user32.GetShellWindow.restype = wintypes.HWND
@@ -226,9 +227,11 @@ def press_key(name):
     if not _user32:
         return
     scan = _user32.MapVirtualKeyW(vk, 0) & 0xFF
-    _user32.keybd_event(vk, scan, ext, 0)
+    if _raw_send([_key(vk, scan, ext)]) == 0:
+        post_key(vk)
+        return
     time.sleep(0.02)
-    _user32.keybd_event(vk, scan, ext | KEYUP, 0)
+    _raw_send([_key(vk, scan, ext | KEYUP)])
 
 
 WM_APPCOMMAND = 0x0319
@@ -267,48 +270,53 @@ async def media_session_command(name):
     return False
 
 
-CF_UNICODETEXT = 13
-GMEM_MOVEABLE = 0x0002
+class GUITHREADINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD), ("hwndActive", wintypes.HWND),
+                ("hwndFocus", wintypes.HWND), ("hwndCapture", wintypes.HWND), ("hwndMenuOwner", wintypes.HWND),
+                ("hwndMoveSize", wintypes.HWND), ("hwndCaret", wintypes.HWND), ("rcCaret", wintypes.RECT)]
 
 
-def _clipboard_set(text):
-    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    k32.GlobalAlloc.restype = ctypes.c_void_p
-    k32.GlobalAlloc.argtypes = (wintypes.UINT, ctypes.c_size_t)
-    k32.GlobalLock.restype = ctypes.c_void_p
-    k32.GlobalLock.argtypes = (ctypes.c_void_p,)
-    k32.GlobalUnlock.argtypes = (ctypes.c_void_p,)
-    _user32.SetClipboardData.argtypes = (wintypes.UINT, ctypes.c_void_p)
-    _user32.OpenClipboard.argtypes = (wintypes.HWND,)
-    data = text.encode("utf-16-le") + b"\x00\x00"
-    for _ in range(10):
-        if _user32.OpenClipboard(None):
-            break
-        time.sleep(0.02)
-    else:
-        return False
-    try:
-        _user32.EmptyClipboard()
-        h = k32.GlobalAlloc(GMEM_MOVEABLE, len(data))
-        ptr = k32.GlobalLock(h)
-        ctypes.memmove(ptr, data, len(data))
-        k32.GlobalUnlock(h)
-        _user32.SetClipboardData(CF_UNICODETEXT, h)
-        return True
-    finally:
-        _user32.CloseClipboard()
+WM_KEYDOWN, WM_KEYUP, WM_CHAR = 0x0100, 0x0101, 0x0102
 
 
-def paste_text(text):
-    """Typing fallback: put the text on the clipboard and press Ctrl+V."""
-    if not _user32 or not _clipboard_set(text):
+def focus_window():
+    info = GUITHREADINFO(cbSize=ctypes.sizeof(GUITHREADINFO))
+    if _user32.GetGUIThreadInfo(0, ctypes.byref(info)) and (info.hwndFocus or info.hwndActive):
+        return info.hwndFocus or info.hwndActive
+    return _user32.GetForegroundWindow()
+
+
+def _key_lparam(vk, up):
+    scan = _user32.MapVirtualKeyW(vk, 0) & 0xFF
+    lp = 1 | (scan << 16)
+    if vk in EXTENDED_KEYS:
+        lp |= 1 << 24
+    if up:
+        lp |= (1 << 30) | (1 << 31)
+    return lp
+
+
+def post_key(vk):
+    """Key press posted straight to the focused window (used where simulated input is blocked)."""
+    target = focus_window()
+    if not target:
         return
-    ctrl, v = 0x11, 0x56
-    _user32.keybd_event(ctrl, 0, 0, 0)
-    _user32.keybd_event(v, 0, 0, 0)
-    time.sleep(0.02)
-    _user32.keybd_event(v, 0, KEYUP, 0)
-    _user32.keybd_event(ctrl, 0, KEYUP, 0)
+    _user32.PostMessageW(target, WM_KEYDOWN, vk, _key_lparam(vk, False))
+    _user32.PostMessageW(target, WM_KEYUP, vk, _key_lparam(vk, True) & 0xFFFFFFFF)
+
+
+def post_text(text):
+    """Characters posted straight to the focused control."""
+    target = focus_window()
+    if not target:
+        return
+    for ch in text:
+        if ch == "\n":
+            post_key(VK["enter"])
+        else:
+            for unit in range(0, len(ch.encode("utf-16-le")), 2):
+                code = int.from_bytes(ch.encode("utf-16-le")[unit:unit + 2], "little")
+                _user32.PostMessageW(target, WM_CHAR, code, 1)
 
 
 def type_text(text):
@@ -321,7 +329,7 @@ def type_text(text):
             continue
         events += [_key(0, unit, UNICODE), _key(0, unit, UNICODE | KEYUP)]
     if events and _raw_send(events) == 0:
-        paste_text(text.replace("\n", "\r\n"))
+        post_text(text)
 
 
 # ---------------------------------------------------------------- shortcuts
