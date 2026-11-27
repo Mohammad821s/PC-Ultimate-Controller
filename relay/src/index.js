@@ -5,7 +5,14 @@
 // One Durable Object ("room") per PC. The PC proves it owns the room with a secret key
 // it chose the first time it connected. Phones are not trusted here: the PC itself
 // checks the phone's pairing token over the signaling channel before answering.
+//
+// Optional "waker": a small ESP32 at home that turns the PC on (Wake-on-LAN) while the PC
+// is off. The PC registers it (hash of its key) together with hashes of the phones it has
+// approved, so a wake request is accepted only from those phones even when the PC is off.
 import { DurableObject } from "cloudflare:workers";
+import FLASH_HTML from "./flash.html";
+
+const FW_URL = "https://github.com/Mohammad821s/PC-Ultimate-Controller/releases/download/waker-fw/pc-waker.bin";
 
 const ID_RE = /^[a-z0-9]{16,40}$/;
 const MAX_MSG = 64 * 1024;
@@ -19,7 +26,22 @@ export default {
     if (url.pathname === "/" || url.pathname === "/health") {
       return new Response("PC Ultimate Controller relay\n", { headers: { "content-type": "text/plain" } });
     }
-    if (url.pathname !== "/pc" && url.pathname !== "/phone") return new Response("not found", { status: 404 });
+    // ESP32 flasher (ESP Web Tools): the page, its manifest, and the firmware passed through with CORS
+    if (url.pathname === "/flash" || url.pathname === "/flash/") {
+      return new Response(FLASH_HTML, { headers: { "content-type": "text/html; charset=utf-8" } });
+    }
+    if (url.pathname === "/flash/manifest.json") {
+      return Response.json({
+        name: "PC Waker", version: "1", new_install_prompt_erase: true,
+        builds: [{ chipFamily: "ESP32", parts: [{ path: "/flash/pc-waker.bin", offset: 0 }] }],
+      }, { headers: { "access-control-allow-origin": "*", "cache-control": "no-store" } });
+    }
+    if (url.pathname === "/flash/pc-waker.bin") {
+      const r = await fetch(FW_URL, { cf: { cacheTtl: 300 } });
+      if (!r.ok) return new Response("firmware not built yet", { status: 404 });
+      return new Response(r.body, { headers: { "content-type": "application/octet-stream", "access-control-allow-origin": "*" } });
+    }
+    if (url.pathname !== "/pc" && url.pathname !== "/phone" && url.pathname !== "/waker") return new Response("not found", { status: 404 });
     const id = url.searchParams.get("id") || "";
     if (!ID_RE.test(id)) return new Response("bad id", { status: 400 });
     if ((req.headers.get("Upgrade") || "").toLowerCase() !== "websocket") {
@@ -52,11 +74,23 @@ export class Room extends DurableObject {
   }
 
   pc() { return this.ctx.getWebSockets("pc")[0] || null; }
+  waker() { return this.ctx.getWebSockets("waker")[0] || null; }
+
+  wakerState() {
+    return { t: "waker_state", waker: this.meta("waker_key") !== null, waker_online: !!this.waker() };
+  }
+
+  toPhones(m) { for (const p of this.ctx.getWebSockets("phone")) p.send(JSON.stringify(m)); }
 
   async fetch(req) {
     const url = new URL(req.url);
-    const role = url.pathname === "/pc" ? "pc" : "phone";
-    if (role === "pc") {
+    const role = url.pathname === "/pc" ? "pc" : url.pathname === "/waker" ? "waker" : "phone";
+    if (role === "waker") {
+      const known = this.meta("waker_key");
+      const key = url.searchParams.get("key") || "";
+      if (known === null || key.length < 24 || (await sha256(key)) !== known) return new Response("forbidden", { status: 403 });
+      for (const old of this.ctx.getWebSockets("waker")) old.close(4000, "replaced");
+    } else if (role === "pc") {
       const key = url.searchParams.get("key") || "";
       if (key.length < 24) return new Response("bad key", { status: 400 });
       const h = await sha256(key);
@@ -68,12 +102,18 @@ export class Room extends DurableObject {
       return new Response("busy", { status: 429 });
     }
     const [client, server] = Object.values(new WebSocketPair());
-    const sid = role === "pc" ? "pc" : crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+    const sid = role === "pc" || role === "waker" ? role : crypto.randomUUID().replace(/-/g, "").slice(0, 12);
     this.ctx.acceptWebSocket(server, [role, "s:" + sid]);
     server.serializeAttachment({ role, sid, n: 0 });
-    if (role === "phone") {
+    if (role === "waker") {
+      server.send(JSON.stringify({ t: "relay_hello", sid: "waker", mac: this.meta("pc_mac") || "" }));
+      this.toPhones(this.wakerState());
       const pc = this.pc();
-      server.send(JSON.stringify({ t: "relay_hello", sid, pc_online: !!pc }));
+      if (pc) pc.send(JSON.stringify(this.wakerState()));
+    } else if (role === "phone") {
+      const pc = this.pc();
+      server.send(JSON.stringify({ t: "relay_hello", sid, pc_online: !!pc,
+        waker: this.meta("waker_key") !== null, waker_online: !!this.waker() }));
       if (pc) pc.send(JSON.stringify({ t: "peer_join", from: sid }));
     } else {
       server.send(JSON.stringify({ t: "relay_hello", sid: "pc", turn: !!(this.env.TURN_KEY_ID && this.env.TURN_KEY_TOKEN) }));
@@ -91,13 +131,40 @@ export class Room extends DurableObject {
       att.n += 1;
       ws.serializeAttachment(att);
       if (att.n > MAX_PHONE_MSGS) { ws.close(4008, "too many messages"); return; }
+      if (m.t === "wake") { await this.wake(ws, att, m); return; }
+      if (m.t === "waker_state") { ws.send(JSON.stringify(this.wakerState())); return; }
       const pc = this.pc();
       if (!pc) { ws.send(JSON.stringify({ t: "pc_offline" })); return; }
       m.from = att.sid;
       pc.send(JSON.stringify(m));
       return;
     }
+    if (att.role === "waker") {
+      // "woke": the magic packet went out; tell whoever asked
+      if (m.t === "woke" && m.to) {
+        const target = this.ctx.getWebSockets("s:" + m.to)[0];
+        if (target) target.send(JSON.stringify({ t: "wake_result", ok: true }));
+      }
+      return;
+    }
     // from the PC
+    if (m.t === "waker_set") {
+      // register (or replace) the waker and the approved phones; "key_hash" null removes it
+      if (m.key_hash === null) {
+        this.ctx.storage.sql.exec("DELETE FROM meta WHERE k IN ('waker_key','phones','pc_mac')");
+        for (const w of this.ctx.getWebSockets("waker")) w.close(4003, "removed");
+      } else {
+        if (typeof m.key_hash === "string" && /^[0-9a-f]{64}$/.test(m.key_hash)) this.setMeta("waker_key", m.key_hash);
+        if (Array.isArray(m.phones)) this.setMeta("phones", JSON.stringify(m.phones.filter((h) => /^[0-9a-f]{64}$/.test(h)).slice(0, 32)));
+        if (typeof m.mac === "string" && /^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$/.test(m.mac)) this.setMeta("pc_mac", m.mac);
+        const w = this.waker();
+        if (w) w.send(JSON.stringify({ t: "config", mac: this.meta("pc_mac") || "" }));
+      }
+      ws.send(JSON.stringify(this.wakerState()));
+      this.toPhones(this.wakerState());
+      return;
+    }
+    if (m.t === "waker_state") { ws.send(JSON.stringify(this.wakerState())); return; }
     if (m.t === "turn") {
       ws.send(JSON.stringify({ t: "turn", req: m.req || null, iceServers: await this.turn() }));
       return;
@@ -106,6 +173,18 @@ export class Room extends DurableObject {
     delete m.to;
     const target = to && this.ctx.getWebSockets("s:" + to)[0];
     if (target) target.send(JSON.stringify(m));
+  }
+
+  async wake(ws, att, m) {
+    const reply = (o) => ws.send(JSON.stringify({ t: "wake_result", ...o }));
+    let phones = [];
+    try { phones = JSON.parse(this.meta("phones") || "[]"); } catch {}
+    const token = typeof m.token === "string" ? m.token : "";
+    if (!token || !phones.includes(await sha256(token))) { reply({ ok: false, error: "not_allowed" }); return; }
+    if (this.pc()) { reply({ ok: true, already_on: true }); return; }
+    const w = this.waker();
+    if (!w) { reply({ ok: false, error: "waker_offline" }); return; }
+    w.send(JSON.stringify({ t: "wake", from: att.sid, mac: this.meta("pc_mac") || "" }));
   }
 
   async turn() {
@@ -144,6 +223,8 @@ export class Room extends DurableObject {
       if (pc) pc.send(JSON.stringify({ t: "peer_left", from: att.sid }));
     } else if (att.role === "pc") {
       for (const p of this.ctx.getWebSockets("phone")) p.send(JSON.stringify({ t: "pc_offline" }));
+    } else if (att.role === "waker") {
+      this.toPhones({ t: "waker_state", waker: this.meta("waker_key") !== null, waker_online: false });
     }
   }
 
