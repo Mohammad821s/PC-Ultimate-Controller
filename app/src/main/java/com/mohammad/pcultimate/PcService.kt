@@ -57,6 +57,7 @@ class PcService : Service(), PcClient.Listener {
     override fun onCreate() {
         super.onCreate()
         PcClient.init(this)
+        Updater.startPeriodic(this)
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL, "التحكم بالكمبيوتر", NotificationManager.IMPORTANCE_LOW)

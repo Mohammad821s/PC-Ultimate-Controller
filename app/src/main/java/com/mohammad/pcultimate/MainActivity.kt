@@ -34,6 +34,8 @@ class MainActivity : ComponentActivity(), PcClient.Listener {
         PcClient.init(this)
         AppSettings.load(this)
         enableEdgeToEdge()
+        Updater.cleanup(this)
+        if (intent?.getBooleanExtra(Updater.EXTRA_OPEN, false) == true) Updater.dismissed = false
 
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
@@ -63,6 +65,19 @@ class MainActivity : ComponentActivity(), PcClient.Listener {
                         is Screen.Editor -> EditorScreen(s.shortcut, onDone = { screen = Screen.Home })
                     }
                 }
+                if (Updater.available != null && !Updater.dismissed) {
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { if (Updater.progress == null) Updater.dismissed = true },
+                        title = { androidx.compose.material3.Text("Update available") },
+                        text = { UpdatePanel() },
+                        confirmButton = {},
+                        dismissButton = {
+                            if (Updater.progress == null) androidx.compose.material3.TextButton(onClick = { Updater.dismissed = true }) {
+                                androidx.compose.material3.Text("Later")
+                            }
+                        }
+                    )
+                }
             }
         }
     }
@@ -71,6 +86,12 @@ class MainActivity : ComponentActivity(), PcClient.Listener {
         super.onResume()
         PcClient.listeners.add(this)
         if (!PcClient.connected) PcClient.connect()
+        Updater.check(this)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.getBooleanExtra(Updater.EXTRA_OPEN, false)) { Updater.dismissed = false; Updater.check(this, force = true) }
     }
 
     override fun onPause() {

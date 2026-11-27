@@ -141,10 +141,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             }
 
             Section("About") {
-                var updateText by remember { mutableStateOf("") }
-                var updateUrl by remember { mutableStateOf("") }
                 val pkg = remember { ctx.packageManager.getPackageInfo(ctx.packageName, 0) }
-                val myBuild = pkg.longVersionCode
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text("App version ${pkg.versionName}", style = MaterialTheme.typography.bodyMedium)
@@ -154,43 +151,41 @@ fun SettingsScreen(onBack: () -> Unit) {
                         )
                     }
                     Button(
-                        onClick = {
-                            updateText = "Checking…"; updateUrl = ""
-                            scope.launch {
-                                val latest = withContext(Dispatchers.IO) {
-                                    try {
-                                        val req = Request.Builder().url("https://api.github.com/repos/$REPO/releases/latest").build()
-                                        PcClient.web.newCall(req).execute().use { r ->
-                                            JSONObject(r.body?.string() ?: "{}").optString("tag_name").removePrefix("build-").toLongOrNull()
-                                        }
-                                    } catch (e: Exception) { null }
-                                }
-                                when {
-                                    latest == null -> updateText = "Couldn't check right now"
-                                    latest > myBuild -> {
-                                        updateText = "Build $latest is available"
-                                        updateUrl = "https://github.com/$REPO/releases/latest"
-                                    }
-                                    else -> updateText = "You're up to date"
-                                }
-                            }
-                        },
+                        onClick = { Updater.check(ctx, force = true) },
+                        enabled = Updater.progress == null,
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = cs.primary.copy(alpha = 0.12f), contentColor = cs.primary)
                     ) { Text("Check for updates") }
                 }
-                if (updateText.isNotEmpty()) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(updateText, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant, modifier = Modifier.weight(1f))
-                        if (updateUrl.isNotEmpty()) {
-                            Button(onClick = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(updateUrl))) }, shape = RoundedCornerShape(12.dp)) {
-                                Text("Download")
-                            }
-                        }
-                    }
-                }
+                UpdatePanel()
             }
         }
+    }
+}
+
+/** Status, progress and the Update button. Shared by Settings and the update dialog. */
+@Composable
+fun UpdatePanel() {
+    val cs = MaterialTheme.colorScheme
+    val ctx = LocalContext.current
+    val r = Updater.available
+    val pr = Updater.progress
+    if (r != null) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Build ${r.build} is ready", style = MaterialTheme.typography.bodyMedium)
+                Text(String.format("%.1f MB", r.size / 1_000_000.0), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+            }
+            Button(onClick = { Updater.install(ctx) }, enabled = pr == null, shape = RoundedCornerShape(12.dp)) {
+                Text(if (pr == null) "Update" else "${(pr * 100).toInt()}%")
+            }
+        }
+    }
+    if (pr != null) {
+        androidx.compose.material3.LinearProgressIndicator(progress = { pr }, modifier = Modifier.fillMaxWidth())
+    }
+    if (Updater.status.isNotEmpty()) {
+        Text(Updater.status, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
     }
 }
 
