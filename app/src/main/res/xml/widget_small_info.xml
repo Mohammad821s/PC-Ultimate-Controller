@@ -11,6 +11,4 @@
     android:initialLayout="@layout/widget_small"
     android:previewLayout="@layout/widget_small"
     android:description="@string/widget_small_desc"
-    android:widgetCategory="home_screen"
-    android:configure="com.mohammad.pcultimate.WidgetConfigActivity"
-    android:widgetFeatures="reconfigurable" />
+    android:widgetCategory="home_screen" />
