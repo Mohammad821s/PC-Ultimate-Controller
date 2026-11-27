@@ -275,7 +275,10 @@ class StreamActivity : ComponentActivity() {
     }
 
     private fun statusLine(): String =
-        if (StreamState.live) "${StreamState.height}p, ${StreamState.fps} fps" else StreamState.status.ifBlank { "Connecting…" }
+        if (StreamState.live) {
+            val d = StreamState.debug
+            if (StreamState.fps == 0 && d.isNotEmpty()) "${StreamState.height}p, $d" else "${StreamState.height}p, ${StreamState.fps} fps"
+        } else StreamState.status.ifBlank { "Connecting…" }
 
     companion object {
         private val WAITING = setOf("", "Connecting…", "Reconnecting…", "Approve this phone on your PC")

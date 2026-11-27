@@ -35,6 +35,8 @@ object StreamState {
     var screenW by mutableStateOf(16)
     var screenH by mutableStateOf(9)
     var quality by mutableStateOf("auto")
+    /** temporary diagnostics while the remote picture doesn't appear */
+    var debug by mutableStateOf("")
 }
 
 /**
@@ -123,6 +125,7 @@ class StreamClient(private val ctx: Context, private val onFrame: (Bitmap) -> Un
     /** From outside home: the PC sends the screen as real video over WebRTC (much less data). */
     private fun startRemote(quality: String) {
         setStatus("Connecting to your PC's screen…")
+        main.post { StreamState.debug = "video: waiting for the track" }
         lateinit var link: RemoteLink
         link = RemoteLink(ctx, Prefs.relay(ctx), Prefs.roomId(ctx),
             onOpen = { if (quality != "auto") link.sendCtl(JSONObject().put("t", "quality").put("q", quality).toString()) },

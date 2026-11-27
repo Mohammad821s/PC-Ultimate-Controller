@@ -87,7 +87,11 @@ class RemoteLink(
             override fun onRenegotiationNeeded() {}
             override fun onAddTrack(r: RtpReceiver, s: Array<out MediaStream>) {}
             override fun onTrack(t: RtpTransceiver) {
-                val track = t.receiver.track() as? VideoTrack ?: return
+                main.post { StreamState.debug = "video: track arrived" }
+                val track = t.receiver.track() as? VideoTrack ?: run {
+                    main.post { StreamState.debug = "video: track is not video (${t.mediaType})" }
+                    return
+                }
                 val cb = onFrame ?: return
                 val conv = FrameConverter(cb).also { converter = it }
                 track.addSink(conv)
@@ -236,6 +240,7 @@ class RemoteLink(
  * skips frames while busy, so a slow phone shows fewer frames instead of falling behind.
  */
 class FrameConverter(private val onFrame: (android.graphics.Bitmap) -> Unit) : VideoSink {
+    // (counters below are shown on screen while no picture has appeared, to find where it stops)
     private val thread = android.os.HandlerThread("frame-convert").apply { start() }
     private val handler = Handler(thread.looper)
     private val main = Handler(Looper.getMainLooper())
@@ -244,7 +249,20 @@ class FrameConverter(private val onFrame: (android.graphics.Bitmap) -> Unit) : V
     private var pixels = IntArray(0)
     private val pool = ArrayDeque<android.graphics.Bitmap>()
 
+    private var rx = 0
+    private var shown = 0
+    private var lastError = ""
+    private val ticker = object : Runnable {
+        override fun run() {
+            if (stopped) return
+            StreamState.debug = if (shown == 0) "video: received $rx, shown $shown${if (lastError.isNotEmpty()) ", $lastError" else ""}" else ""
+            main.postDelayed(this, 1000)
+        }
+    }
+    init { main.postDelayed(ticker, 1500) }
+
     override fun onFrame(frame: VideoFrame) {
+        rx++
         if (busy || stopped) return
         busy = true
         frame.retain()
@@ -254,9 +272,12 @@ class FrameConverter(private val onFrame: (android.graphics.Bitmap) -> Unit) : V
                 if (i420 != null) {
                     val bmp = convert(i420, frame.rotation)
                     i420.release()
-                    main.post { if (!stopped) onFrame(bmp) }
+                    shown++
+                    val deliver = this.onFrame
+                    main.post { if (!stopped) deliver(bmp) }
                 }
-            } catch (_: Exception) {
+            } catch (e: Throwable) {
+                lastError = e.javaClass.simpleName + ": " + (e.message ?: "")
             } finally {
                 frame.release()
                 busy = false
