@@ -73,7 +73,20 @@ export class Room extends DurableObject {
     this.ctx.storage.sql.exec("INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v", k, v);
   }
 
-  pc() { return this.ctx.getWebSockets("pc")[0] || null; }
+  // A PC that is switched off can leave its socket open here (no close frame arrives).
+  // It pings every 25 s, so a socket silent for 90 s is treated as gone and closed.
+  pc() {
+    const pc = this.ctx.getWebSockets("pc")[0];
+    if (!pc) return null;
+    const att = pc.deserializeAttachment() || {};
+    const pinged = this.ctx.getWebSocketAutoResponseTimestamp(pc);
+    const last = Math.max(pinged ? pinged.getTime() : 0, att.since || 0);
+    if (Date.now() - last > 90000) {
+      try { pc.close(4001, "silent"); } catch {}
+      return null;
+    }
+    return pc;
+  }
   waker() { return this.ctx.getWebSockets("waker")[0] || null; }
 
   wakerState() {
@@ -104,7 +117,7 @@ export class Room extends DurableObject {
     const [client, server] = Object.values(new WebSocketPair());
     const sid = role === "pc" || role === "waker" ? role : crypto.randomUUID().replace(/-/g, "").slice(0, 12);
     this.ctx.acceptWebSocket(server, [role, "s:" + sid]);
-    server.serializeAttachment({ role, sid, n: 0 });
+    server.serializeAttachment({ role, sid, n: 0, since: Date.now() });
     if (role === "waker") {
       server.send(JSON.stringify({ t: "relay_hello", sid: "waker", mac: this.meta("pc_mac") || "" }));
       this.toPhones(this.wakerState());
