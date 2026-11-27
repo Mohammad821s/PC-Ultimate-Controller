@@ -332,5 +332,16 @@
             android:contentDescription="Floating touchpad" />
         </LinearLayout>
 
+        <ImageView
+            android:id="@+id/w_padbar"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="0.75"
+            android:layout_marginTop="10dp"
+            android:layout_marginStart="3dp"
+            android:layout_marginEnd="3dp"
+            android:src="@drawable/ic_pad"
+            android:scaleType="fitCenter"
+            android:contentDescription="Floating touchpad" />
     </LinearLayout>
 </FrameLayout>

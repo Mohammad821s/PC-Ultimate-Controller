@@ -175,9 +175,15 @@ object Widgets {
 
                 if (kind == Kind.LARGE) {
                     if (s.showVolume) {
-                        button(R.id.w_voldown, R.drawable.ic_vol_low, 40, false, false, PcService.ACTION_MEDIA, "voldown", 8)
-                        button(R.id.w_mute, R.drawable.ic_vol_off, 40, false, false, PcService.ACTION_MEDIA, "mute", 9)
-                        button(R.id.w_volup, R.drawable.ic_vol_high, 40, false, false, PcService.ACTION_MEDIA, "volup", 10)
+                        // three wide pills filling the row
+                        val pw = px(((wDp - 32f) / 3f - 6f).toInt().coerceAtLeast(40))
+                        val ph = px(40)
+                        listOf(Triple(R.id.w_voldown, R.drawable.ic_vol_low, "voldown"),
+                            Triple(R.id.w_mute, R.drawable.ic_vol_off, "mute"),
+                            Triple(R.id.w_volup, R.drawable.ic_vol_high, "volup")).forEachIndexed { i, (vid, ic, a) ->
+                            v.setImageViewBitmap(vid, pillBitmap(c, ic, null, pw, ph, col.tile, col.text, col.text))
+                            v.setOnClickPendingIntent(vid, pending(c, code + 8 + i, PcService.ACTION_MEDIA, a))
+                        }
                     } else v.setViewVisibility(R.id.w_row_vol, View.GONE)
                 }
                 shortcuts(c, v, s, col, kind == Kind.LARGE, wDp, hDp, code, px)
@@ -190,26 +196,23 @@ object Widgets {
                           wDp: Float, hDp: Float, code: Int, px: (Int) -> Int) {
         val row1 = listOf(R.id.w_sc1, R.id.w_sc2, R.id.w_sc3, R.id.w_sc4, R.id.w_sc5, R.id.w_sc6)
         val row2 = listOf(R.id.w_sc7, R.id.w_sc8, R.id.w_sc9, R.id.w_sc10, R.id.w_sc11, R.id.w_sc12)
-        if (!s.showShortcuts && !s.showPad) {
-            v.setViewVisibility(R.id.w_row_sc, View.GONE)
-            if (large) v.setViewVisibility(R.id.w_row_sc2, View.GONE)
-            return
-        }
-        // as many columns as fit nicely: about 60dp each
-        val cols = ((wDp - 28f) / 60f).toInt().coerceIn(3, 5) + 1
-        val rows = if (large && hDp >= 280f) 2 else 1
+        (row1 + row2).forEach { v.setViewVisibility(it, View.GONE) }
+        v.setViewVisibility(R.id.w_pad, View.GONE)
+        if (large) { v.setViewVisibility(R.id.w_pad2, View.GONE) }
+
         val all = PcState.shortcuts
         val chosen = if (s.shortcutIds.isEmpty()) all else s.shortcutIds.mapNotNull { sid -> all.firstOrNull { it.id == sid } }
         val items = if (s.showShortcuts) chosen else emptyList()
-        val capacity = cols * rows - (if (s.showPad) 1 else 0)
+        // about 60dp per column, at most 6 (the slots in a row)
+        val cols = ((wDp - 28f) / 60f).toInt().coerceIn(3, 5) + 1
+        // the touchpad is a wide bar under the shortcuts on large, and whenever there are no tiles
+        val padAsBar = s.showPad && (large || items.isEmpty())
+        val padAsTile = s.showPad && !padAsBar
+        val rows = if (large && items.size > cols && hDp >= 280f) 2 else 1
+        val capacity = cols * rows - (if (padAsTile) 1 else 0)
         val shown = items.take(capacity)
         val tile = px(if (large) 54 else 46)
-
-        val slots = (row1.take(cols) + if (rows == 2) row2.take(cols) else emptyList())
-        (row1 + row2).forEach { v.setViewVisibility(it, View.GONE) }
-        v.setViewVisibility(R.id.w_pad, View.GONE)
-        if (large) v.setViewVisibility(R.id.w_pad2, View.GONE)
-        if (rows < 2 && large) v.setViewVisibility(R.id.w_row_sc2, View.GONE)
+        val slots = row1.take(cols) + (if (rows == 2) row2.take(cols) else emptyList())
 
         shown.forEachIndexed { i, sc ->
             val viewId = slots[i]
@@ -218,15 +221,22 @@ object Widgets {
             v.setContentDescription(viewId, sc.name)
             v.setOnClickPendingIntent(viewId, pending(c, code + 20 + i, PcService.ACTION_SHORTCUT, sc.id))
         }
-        if (s.showPad) {
-            val padView = if (rows == 2) R.id.w_pad2 else R.id.w_pad
-            v.setViewVisibility(padView, View.VISIBLE)
-            v.setImageViewBitmap(padView, buttonBitmap(c, R.drawable.ic_pad, tile, col.tile, col.accent, false))
-            v.setOnClickPendingIntent(padView, pending(c, code + 11, PcService.ACTION_TOUCHPAD, null))
+        if (padAsTile) {
+            v.setViewVisibility(R.id.w_pad, View.VISIBLE)
+            v.setImageViewBitmap(R.id.w_pad, buttonBitmap(c, R.drawable.ic_pad, tile, col.tile, col.accent, false))
+            v.setOnClickPendingIntent(R.id.w_pad, pending(c, code + 11, PcService.ACTION_TOUCHPAD, null))
         }
-        // keep empty columns so tiles stay square-ish instead of stretching
-        val used = shown.size + (if (s.showPad) 1 else 0)
-        if (used == 0) v.setViewVisibility(R.id.w_row_sc, View.GONE)
+        if (shown.isEmpty() && !padAsTile) v.setViewVisibility(R.id.w_row_sc, View.GONE)
+        if (large && rows < 2) v.setViewVisibility(R.id.w_row_sc2, View.GONE)
+
+        if (padAsBar) {
+            val inner = if (large) 32f else 28f
+            val bw = px((wDp - inner - 6f).toInt().coerceAtLeast(120))
+            val bh = px(if (large) 50 else 44)
+            v.setViewVisibility(R.id.w_padbar, View.VISIBLE)
+            v.setImageViewBitmap(R.id.w_padbar, pillBitmap(c, R.drawable.ic_pad, "Touchpad", bw, bh, col.tile, col.accent, col.text))
+            v.setOnClickPendingIntent(R.id.w_padbar, pending(c, code + 11, PcService.ACTION_TOUCHPAD, null))
+        } else v.setViewVisibility(R.id.w_padbar, View.GONE)
     }
 
     // ------------------------------------------------------------ drawing
@@ -266,6 +276,31 @@ object Widgets {
             it.setBounds(pad, pad, size - pad, size - pad)
             it.draw(cv)
         }
+        return bmp
+    }
+
+    /** A wide rounded button: icon, and an optional label beside it, centered. */
+    private fun pillBitmap(c: Context, icon: Int, label: String?, w: Int, h: Int, bg: Int, iconColor: Int, textColor: Int): Bitmap {
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val cv = Canvas(bmp)
+        val r = h * 0.32f
+        cv.drawRoundRect(RectF(0f, 0f, w.toFloat(), h.toFloat()), r, r, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = bg })
+        val ic = (h * 0.48f).toInt()
+        val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = textColor; textSize = h * 0.32f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        }
+        val gap = if (label != null) (h * 0.22f).toInt() else 0
+        val tw = label?.let { tp.measureText(it) } ?: 0f
+        val total = ic + gap + tw
+        val x0 = (w - total) / 2f
+        ContextCompat.getDrawable(c, icon)?.mutate()?.let {
+            it.setTint(iconColor)
+            val top = (h - ic) / 2
+            it.setBounds(x0.toInt(), top, x0.toInt() + ic, top + ic)
+            it.draw(cv)
+        }
+        if (label != null) cv.drawText(label, x0 + ic + gap, h / 2f - (tp.descent() + tp.ascent()) / 2f, tp)
         return bmp
     }
 
