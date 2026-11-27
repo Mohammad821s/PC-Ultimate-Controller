@@ -72,7 +72,13 @@ object PcWaker {
         val token = Prefs.token(c)
         var done = false
         val finish = { text: String ->
-            main.post { if (!done) { done = true; busy = false; status = text } }
+            main.post {
+                if (!done) {
+                    done = true; busy = false; status = text
+                    // the result is only news for a minute; don't leave it on the card
+                    main.postDelayed({ if (status == text) status = "" }, 60_000)
+                }
+            }
         }
         val req = Request.Builder().url("$relay/phone?id=$rid").build()
         val ws = PcClient.web.newWebSocket(req, object : WebSocketListener() {
