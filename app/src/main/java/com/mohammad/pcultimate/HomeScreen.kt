@@ -306,21 +306,8 @@ private fun ShortcutsRow(onAdd: () -> Unit, onEdit: (Shortcut) -> Unit) {
 @Composable
 internal fun TouchpadPanel(modifier: Modifier) {
     val cs = MaterialTheme.colorScheme
-    val bg = cs.surface.toArgb()
-    val dots = cs.outlineVariant.toArgb()
-    val hint = cs.onSurfaceVariant.copy(alpha = 0.8f).toArgb()
-    val accent = cs.primary.toArgb()
     Column(modifier.fillMaxWidth().clip(RoundedCornerShape(26.dp)).background(cs.surface)) {
-        AndroidView(
-            factory = { TouchpadView(it) },
-            update = {
-                it.setColors(bg, dots, hint, accent)
-                it.sensitivity = AppSettings.sensitivity
-                it.naturalScroll = AppSettings.naturalScroll
-                it.haptics = AppSettings.haptics
-            },
-            modifier = Modifier.weight(1f).fillMaxWidth()
-        )
+        TouchpadFxView(Modifier.weight(1f).fillMaxWidth(), radius = 0.dp)
         Box(Modifier.fillMaxWidth().height(1.dp).background(cs.outlineVariant))
         Row(Modifier.fillMaxWidth().height(52.dp)) {
             TextButton(onClick = { PcClient.click("left") }, modifier = Modifier.weight(1f).fillMaxSize(), shape = RoundedCornerShape(0.dp)) {
@@ -369,3 +356,31 @@ internal fun KeyboardSheet(onDismiss: () -> Unit) {
 
 /** Plain click with the standard ripple. */
 fun Modifier.combinedClickableCompat(onClick: () -> Unit): Modifier = this.clickable(onClick = onClick)
+
+/** Touchpad with the chosen effect background. [live] = false for the settings preview. */
+@Composable
+internal fun TouchpadFxView(modifier: Modifier, radius: androidx.compose.ui.unit.Dp, live: Boolean = true, hint: String = "Touchpad") {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val px = with(androidx.compose.ui.platform.LocalDensity.current) { radius.toPx() }
+    TouchpadFx.load(ctx)
+    // reading these makes the view update when they change
+    val key = listOf(TouchpadFx.bg, TouchpadFx.liquid, TouchpadFx.dotsBase, TouchpadFx.dotsActive, TouchpadFx.ripple)
+    AndroidView(
+        factory = { TouchpadSurface(it, px).apply { setBackgroundTint(FX_PAD_BG) } },
+        update = {
+            key.hashCode()
+            it.pad.setColors(FX_PAD_BG, 0, 0x66C9C3D6, 0)
+            it.pad.hint = hint
+            it.pad.live = live
+            it.pad.sensitivity = AppSettings.sensitivity
+            it.pad.naturalScroll = AppSettings.naturalScroll
+            it.pad.haptics = AppSettings.haptics
+            it.push()
+        },
+        onRelease = { it.destroy() },
+        modifier = modifier
+    )
+}
+
+/** Dark base the effects are designed on (the same in light and dark themes). */
+internal const val FX_PAD_BG = 0xFF0A0910.toInt()

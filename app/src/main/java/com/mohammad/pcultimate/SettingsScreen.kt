@@ -126,6 +126,8 @@ fun SettingsScreen(onBack: () -> Unit) {
 
             WidgetsSection()
 
+            TouchpadLookSection()
+
             Section("Touchpad") {
                 Row(Modifier.fillMaxWidth()) {
                     Text("Pointer speed", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
@@ -331,4 +333,107 @@ private fun WidgetsSection() {
             }
         }
     }
+}
+
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun TouchpadLookSection() {
+    val cs = MaterialTheme.colorScheme
+    val ctx = LocalContext.current
+    TouchpadFx.load(ctx)
+    var editing by remember { mutableStateOf<Pair<String, (String) -> Unit>?>(null) }
+    Section("Touchpad background") {
+        // live preview: touch it to see the effect and the click spark (does not move the PC pointer)
+        TouchpadFxView(Modifier.fillMaxWidth().height(170.dp).clip(RoundedCornerShape(18.dp)),
+            radius = 18.dp, live = false, hint = "Try it here")
+        androidx.compose.foundation.layout.FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            TouchpadFx.backgrounds.forEach { (k, label) ->
+                androidx.compose.material3.FilterChip(selected = TouchpadFx.bg == k,
+                    onClick = { TouchpadFx.bg = k; TouchpadFx.save(ctx) }, label = { Text(label) })
+            }
+        }
+        val rows: List<Triple<String, String, (String) -> Unit>> = when (TouchpadFx.bg) {
+            "liquid" -> TouchpadFx.liquid.mapIndexed { i, c ->
+                Triple("Color ${i + 1}", c, { v: String -> TouchpadFx.liquid = TouchpadFx.liquid.toMutableList().also { it[i] = v }; TouchpadFx.save(ctx) })
+            }
+            "dots" -> listOf(
+                Triple("Dots", TouchpadFx.dotsBase, { v: String -> TouchpadFx.dotsBase = v; TouchpadFx.save(ctx) }),
+                Triple("Dots near your finger", TouchpadFx.dotsActive, { v: String -> TouchpadFx.dotsActive = v; TouchpadFx.save(ctx) }),
+            )
+            "ripple" -> listOf(Triple("Grid", TouchpadFx.ripple, { v: String -> TouchpadFx.ripple = v; TouchpadFx.save(ctx) }))
+            else -> emptyList()
+        }
+        rows.forEach { (label, hex, set) ->
+            Row(
+                Modifier.fillMaxWidth().height(46.dp).clip(RoundedCornerShape(14.dp)).background(cs.surfaceContainerHigh)
+                    .combinedClickableCompat { editing = hex to set }.padding(horizontal = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                Text(hex.uppercase(), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                Spacer(Modifier.size(8.dp))
+                Box(Modifier.size(22.dp).clip(RoundedCornerShape(7.dp)).background(Color(android.graphics.Color.parseColor(hex))))
+            }
+        }
+        if (rows.isNotEmpty()) androidx.compose.material3.TextButton(onClick = { TouchpadFx.resetColors(ctx) }) {
+            Text("Reset colors")
+        }
+        Text("A tap always shows the spark. The floating touchpad uses the same look.",
+            style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+    }
+    editing?.let { (start, set) -> ColorPickerDialog(start, onDismiss = { editing = null }) { set(it); editing = null } }
+}
+
+/** Hue, brightness, hex and a few presets. Returns "#RRGGBB". */
+@Composable
+internal fun ColorPickerDialog(start: String, onDismiss: () -> Unit, onPick: (String) -> Unit) {
+    val hsv = remember {
+        FloatArray(3).also { android.graphics.Color.colorToHSV(try { android.graphics.Color.parseColor(start) } catch (e: Exception) { -1 }, it) }
+    }
+    var hue by remember { mutableStateOf(hsv[0]) }
+    var sat by remember { mutableStateOf(hsv[1]) }
+    var value by remember { mutableStateOf(hsv[2]) }
+    val current = android.graphics.Color.HSVToColor(floatArrayOf(hue, sat, value))
+    var hex by remember { mutableStateOf(start.uppercase()) }
+    fun fromHsv() { hex = String.format("#%06X", android.graphics.Color.HSVToColor(floatArrayOf(hue, sat, value)) and 0xFFFFFF) }
+    fun fromInt(c: Int) {
+        val t = FloatArray(3); android.graphics.Color.colorToHSV(c, t)
+        hue = t[0]; sat = t[1]; value = t[2]; hex = String.format("#%06X", c and 0xFFFFFF)
+    }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Pick a color") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(Modifier.fillMaxWidth().height(44.dp).clip(RoundedCornerShape(12.dp)).background(Color(current)))
+                Text("Hue", style = MaterialTheme.typography.labelMedium)
+                Box(Modifier.fillMaxWidth().height(12.dp).clip(RoundedCornerShape(6.dp))
+                    .background(Brush.horizontalGradient((0..6).map { Color.hsv(it * 60f % 360f, 0.8f, 0.9f) })))
+                Slider(value = hue, valueRange = 0f..359f, onValueChange = { hue = it; fromHsv() })
+                Text("Strength", style = MaterialTheme.typography.labelMedium)
+                Slider(value = sat, valueRange = 0f..1f, onValueChange = { sat = it; fromHsv() })
+                Text("Brightness", style = MaterialTheme.typography.labelMedium)
+                Slider(value = value, valueRange = 0f..1f, onValueChange = { value = it; fromHsv() })
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    (listOf(0xFF5227FF.toInt(), 0xFFFF9FFC.toInt(), 0xFFB497CF.toInt(), 0xFFFFFFFF.toInt()) + AccentPresets.take(4).map { it.first })
+                        .forEach { c ->
+                            Box(Modifier.size(26.dp).clip(CircleShape).background(Color(c)).combinedClickableCompat { fromInt(c) })
+                        }
+                }
+                OutlinedTextField(
+                    value = hex, onValueChange = {
+                        hex = it
+                        val clean = it.trim().removePrefix("#")
+                        if (clean.length == 6) clean.toLongOrNull(16)?.let { v -> fromInt((0xFF000000 or v).toInt()) }
+                    },
+                    label = { Text("Hex") }, singleLine = true, shape = RoundedCornerShape(12.dp),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii), modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = { androidx.compose.material3.TextButton(onClick = { onPick(String.format("#%06X", current and 0xFFFFFF)) }) { Text("Done") } },
+        dismissButton = { androidx.compose.material3.TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }

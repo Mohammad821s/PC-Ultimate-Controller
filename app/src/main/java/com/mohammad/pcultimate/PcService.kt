@@ -50,6 +50,7 @@ class PcService : Service(), PcClient.Listener {
     private var overlay: View? = null
     private var overlayParams: WindowManager.LayoutParams? = null
     private var overlayPad: TouchpadView? = null
+    private var overlaySurface: TouchpadSurface? = null
     private var wifiLock: WifiManager.WifiLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -216,7 +217,7 @@ class PcService : Service(), PcClient.Listener {
         val params = WindowManager.LayoutParams(
             dp(330f), dp(300f),
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.LEFT
@@ -270,16 +271,18 @@ class PcService : Service(), PcClient.Listener {
         header.addView(handle, LinearLayout.LayoutParams(0, dp(36f), 1f))
         header.addView(close, LinearLayout.LayoutParams(dp(34f), dp(34f)))
 
-        val pad = TouchpadView(this).apply {
-            AppSettings.load(this@PcService)
+        AppSettings.load(this@PcService)
+        val surface = TouchpadSurface(this, dp(20f).toFloat()).apply { setBackgroundTint(FX_PAD_BG) }
+        surface.pad.apply {
             sensitivity = AppSettings.sensitivity
             naturalScroll = AppSettings.naturalScroll
             haptics = AppSettings.haptics
-            cornerRadius = dp(20f).toFloat()
             hint = "Touchpad"
-            setColors(0xFF161B23.toInt(), 0xFF252D39.toInt(), 0xFF6D7789.toInt(), accent)
+            setColors(FX_PAD_BG, 0, 0x66C9C3D6, 0)
         }
-        overlayPad = pad
+        val pad = surface
+        overlaySurface = surface
+        overlayPad = surface.pad
 
         val controls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -310,6 +313,8 @@ class PcService : Service(), PcClient.Listener {
         overlay?.let {
             try { getSystemService(WindowManager::class.java).removeView(it) } catch (_: Exception) {}
         }
+        overlaySurface?.destroy()
+        overlaySurface = null
         overlay = null
         overlayParams = null
         overlayPad = null

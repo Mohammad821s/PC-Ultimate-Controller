@@ -41,6 +41,12 @@ class TouchpadView(ctx: Context) : View(ctx) {
     var haptics = true
     var cornerRadius = 0f
     var hint = "Tap to click, two fingers to scroll"
+    /** Drawn over the effect page: no background, dots or finger circle (the page draws those). */
+    var fxMode = false
+    /** Copy of every touch for the effect page. */
+    var forward: ((MotionEvent) -> Unit)? = null
+    /** false in the settings preview: touches move the effect only, not the PC. */
+    var live = true
 
     private var lastX = 0f
     private var lastY = 0f
@@ -66,6 +72,10 @@ class TouchpadView(ctx: Context) : View(ctx) {
     }
 
     override fun onDraw(canvas: Canvas) {
+        if (fxMode) {
+            if (fingerX < 0 && hint.isNotEmpty()) canvas.drawText(hint, width / 2f, height - 18f * d, hintPaint)
+            return
+        }
         rect.set(0f, 0f, width.toFloat(), height.toFloat())
         canvas.drawRoundRect(rect, cornerRadius, cornerRadius, bgPaint)
         val step = 18f * d
@@ -100,6 +110,14 @@ class TouchpadView(ctx: Context) : View(ctx) {
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        forward?.let { f -> e.copyFor(f) }
+        if (!live) {
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { fingerX = e.x; parent?.requestDisallowInterceptTouchEvent(true); invalidate() }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { fingerX = -1f; invalidate() }
+            }
+            return true
+        }
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 lastX = e.x; lastY = e.y; lastT = e.eventTime

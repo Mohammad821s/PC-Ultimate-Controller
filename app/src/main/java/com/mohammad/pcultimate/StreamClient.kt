@@ -243,6 +243,9 @@ class StreamClient(private val ctx: Context, private val onFrame: (Bitmap) -> Un
     fun tap(x: Float, y: Float, button: String) =
         send(JSONObject().put("t", "tap").put("x", x.toDouble()).put("y", y.toDouble()).put("b", button))
     fun scroll(steps: Int) = send(JSONObject().put("t", "scroll").put("n", steps))
+    fun hscroll(steps: Int) = send(JSONObject().put("t", "scroll").put("n", steps).put("h", true))
+    /** Holds or releases a mouse button (for dragging on the PC). */
+    fun button(b: String, down: Boolean) = send(JSONObject().put("t", "button").put("b", b).put("down", down))
 
     fun stop() {
         closed = true

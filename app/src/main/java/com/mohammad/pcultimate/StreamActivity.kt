@@ -15,7 +15,12 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -202,7 +207,8 @@ class StreamActivity : ComponentActivity() {
                 IconTile(R.drawable.ic_fullscreen, "Full screen") { setFull(true) }
             }
             val ratio = StreamState.screenW.toFloat() / StreamState.screenH.coerceAtLeast(1)
-            Picture(Modifier.fillMaxWidth().aspectRatio(ratio.coerceIn(0.5f, 3f)), rounded = true)
+            // square corners: rounded ones hid the edges of the PC screen (taskbar corners, close buttons)
+            Picture(Modifier.fillMaxWidth().aspectRatio(ratio.coerceIn(0.5f, 3f)), rounded = false)
             TouchpadPanel(Modifier.weight(1f))
             Button(
                 onClick = { keyboard = true },
@@ -220,36 +226,114 @@ class StreamActivity : ComponentActivity() {
     @Composable
     private fun FullScreen() {
         var keyboard by remember { mutableStateOf(false) }
-        var controls by remember { mutableStateOf(true) }
-        LaunchedEffect(controls) { if (controls) { delay(4000); controls = false } }
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             Picture(Modifier.fillMaxSize(), rounded = false)
-            // a thin strip at the top brings the buttons back
-            Box(Modifier.fillMaxWidth().height(28.dp).align(Alignment.TopCenter).clickable { controls = true })
-            AnimatedVisibility(controls, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.TopEnd)) {
-                Row(
-                    Modifier.padding(12.dp).clip(RoundedCornerShape(16.dp)).background(Color.Black.copy(alpha = 0.55f)).padding(6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(statusLine(), color = Color.White.copy(alpha = 0.8f), style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.padding(horizontal = 8.dp))
-                    QualityButton(dark = true)
-                    if (StreamState.audioAvailable) {
-                        OverlayButton(if (StreamState.audioOn) R.drawable.ic_vol_high else R.drawable.ic_vol_off,
-                            if (StreamState.audioOn) "Mute PC sound on phone" else "Play PC sound on phone") {
-                            client.setAudio(!StreamState.audioOn)
-                        }
-                    }
-                    OverlayButton(R.drawable.ic_keyboard, "Keyboard") { keyboard = true }
-                    OverlayButton(R.drawable.ic_pip, "Small window") { enterPip() }
-                    OverlayButton(R.drawable.ic_fullscreen_exit, "Exit full screen") { setFull(false) }
-                }
-            }
-            AnimatedVisibility(!controls, enter = fadeIn(), exit = fadeOut(), modifier = Modifier.align(Alignment.TopCenter)) {
-                Box(Modifier.padding(top = 6.dp).size(width = 44.dp, height = 5.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.35f)))
-            }
+            FloatingControls(onKeyboard = { keyboard = true })
         }
         if (keyboard) KeyboardSheet { keyboard = false }
+    }
+
+    /**
+     * One small round button on the side of the screen. It fades while you work, you can drag it
+     * anywhere along the left or right edge, and a tap opens the controls next to it.
+     */
+    @Composable
+    private fun FloatingControls(onKeyboard: () -> Unit) {
+        val density = androidx.compose.ui.platform.LocalDensity.current
+        androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxSize()) {
+            val maxW = with(density) { maxWidth.toPx() }
+            val maxH = with(density) { maxHeight.toPx() }
+            val size = with(density) { 46.dp.toPx() }
+            val margin = with(density) { 14.dp.toPx() }
+            var right by remember { mutableStateOf(true) }
+            var y by remember { mutableStateOf(maxH * 0.18f) }
+            var dragX by remember { mutableStateOf<Float?>(null) }
+            var open by remember { mutableStateOf(false) }
+            var poke by remember { mutableStateOf(0) }
+            var awake by remember { mutableStateOf(true) }
+            LaunchedEffect(poke, open) {
+                awake = true
+                delay(if (open) 6000 else 2500)
+                if (open) open = false else awake = false
+            }
+            val restX = if (right) maxW - size - margin else margin
+            val x = dragX ?: restX
+            val alpha by androidx.compose.animation.core.animateFloatAsState(if (awake || open) 1f else 0.32f,
+                androidx.compose.animation.core.tween(220), label = "fade")
+            val animX by androidx.compose.animation.core.animateFloatAsState(x,
+                if (dragX != null) androidx.compose.animation.core.snap() else androidx.compose.animation.core.spring(dampingRatio = 0.85f, stiffness = 500f),
+                label = "x")
+
+            // tapping anywhere else closes the panel (that tap does not reach the PC)
+            if (open) Box(Modifier.fillMaxSize().clickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null) { open = false })
+
+            Box(
+                Modifier
+                    .offset { androidx.compose.ui.unit.IntOffset(animX.toInt(), y.toInt()) }
+                    .size(46.dp)
+                    .graphicsLayerAlpha(alpha)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.6f))
+                    .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
+                    .pointerInput(maxW, maxH) {
+                        detectDragGestures(
+                            onDragStart = { dragX = restX; poke++ },
+                            onDragEnd = {
+                                right = (dragX ?: restX) + size / 2 > maxW / 2
+                                dragX = null; poke++
+                            },
+                            onDragCancel = { dragX = null },
+                        ) { change, amount ->
+                            change.consume()
+                            dragX = ((dragX ?: restX) + amount.x).coerceIn(0f, maxW - size)
+                            y = (y + amount.y).coerceIn(margin, maxH - size - margin)
+                        }
+                    }
+                    .clickable { open = !open; poke++ },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(painterResource(if (open) R.drawable.ic_close else R.drawable.ic_more), "Controls",
+                    Modifier.size(20.dp), tint = Color.White)
+            }
+
+            AnimatedVisibility(open,
+                enter = fadeIn(androidx.compose.animation.core.tween(160)) +
+                    androidx.compose.animation.scaleIn(androidx.compose.animation.core.tween(180), initialScale = 0.92f),
+                exit = fadeOut(androidx.compose.animation.core.tween(120)),
+                modifier = Modifier.offset {
+                    val panelW = with(density) { 300.dp.toPx() }
+                    val px = if (right) restX - panelW - with(density) { 8.dp.toPx() } else restX + size + with(density) { 8.dp.toPx() }
+                    androidx.compose.ui.unit.IntOffset(px.toInt(), (y - with(density) { 2.dp.toPx() }).toInt())
+                }
+            ) {
+                Column(
+                    Modifier.width(300.dp).clip(RoundedCornerShape(18.dp)).background(Color(0xE614161B))
+                        .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(18.dp)).padding(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        OverlayButton(R.drawable.ic_fullscreen_exit, "Exit full screen") { setFull(false) }
+                        OverlayButton(R.drawable.ic_keyboard, "Keyboard") { open = false; onKeyboard() }
+                        if (StreamState.audioAvailable) {
+                            OverlayButton(if (StreamState.audioOn) R.drawable.ic_vol_high else R.drawable.ic_vol_off,
+                                if (StreamState.audioOn) "Mute PC sound on phone" else "Play PC sound on phone") {
+                                client.setAudio(!StreamState.audioOn); poke++
+                            }
+                        }
+                        OverlayButton(R.drawable.ic_pip, "Small window") { open = false; enterPip() }
+                        Spacer(Modifier.weight(1f))
+                        QualityButton(dark = true)
+                    }
+                    Text(statusLine(), color = Color.White.copy(alpha = 0.8f), style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.padding(horizontal = 6.dp))
+                    Text("Tap to click. Swipe to scroll. Hold for right click, hold and move to drag. Two fingers zoom.",
+                        color = Color.White.copy(alpha = 0.55f), style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                }
+            }
+        }
     }
 
     @Composable
@@ -292,6 +376,8 @@ class StreamActivity : ComponentActivity() {
             val d = StreamState.debug
             if (StreamState.fps == 0 && d.isNotEmpty()) "${StreamState.height}p, $d" else "${StreamState.height}p, ${StreamState.fps} fps"
         } else StreamState.status.ifBlank { "Connecting…" }
+
+    private fun Modifier.graphicsLayerAlpha(a: Float) = this.graphicsLayer { alpha = a }
 
     companion object {
         private val WAITING = setOf("", "Connecting…", "Reconnecting…", "Approve this phone on your PC")
