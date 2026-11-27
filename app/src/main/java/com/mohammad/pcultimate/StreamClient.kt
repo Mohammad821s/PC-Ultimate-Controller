@@ -24,6 +24,8 @@ object StreamQuality {
     fun label(q: String) = options.firstOrNull { it.first == q }?.second ?: "Auto"
     fun load(c: Context): String = c.getSharedPreferences("pc", Context.MODE_PRIVATE).getString("stream_q", "auto") ?: "auto"
     fun save(c: Context, q: String) = c.getSharedPreferences("pc", Context.MODE_PRIVATE).edit().putString("stream_q", q).apply()
+    fun audio(c: Context): Boolean = c.getSharedPreferences("pc", Context.MODE_PRIVATE).getBoolean("stream_audio", true)
+    fun saveAudio(c: Context, on: Boolean) = c.getSharedPreferences("pc", Context.MODE_PRIVATE).edit().putBoolean("stream_audio", on).apply()
 }
 
 /** Observable state of the screen view, changed on the main thread. */
@@ -37,6 +39,10 @@ object StreamState {
     var quality by mutableStateOf("auto")
     /** temporary diagnostics while the remote picture doesn't appear */
     var debug by mutableStateOf("")
+    /** PC sound on the phone */
+    var audioOn by mutableStateOf(true)
+    /** whether this PC can send its sound */
+    var audioAvailable by mutableStateOf(false)
 }
 
 /**
@@ -61,8 +67,11 @@ class StreamClient(private val ctx: Context, private val onFrame: (Bitmap) -> Un
     private var frames = 0
     private var fpsSince = System.currentTimeMillis()
 
+    @Volatile private var player: PcmPlayer? = null
+
     fun start(quality: String) {
         closed = false
+        StreamState.audioOn = StreamQuality.audio(ctx)
         fatal = false
         StreamState.quality = quality
         val host = Prefs.host(ctx)
@@ -74,12 +83,18 @@ class StreamClient(private val ctx: Context, private val onFrame: (Bitmap) -> Un
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 val auth = JSONObject().put("t", "auth").put("token", Prefs.token(ctx))
                     .put("device", Prefs.deviceName(ctx)).put("mode", "stream").put("quality", quality)
+                    .put("audio", StreamQuality.audio(ctx))
                 Prefs.pin(ctx).takeIf { it.isNotBlank() }?.let { auth.put("pin", it) }
                 webSocket.send(auth.toString())
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
                 val data = bytes.toByteArray()
+                if (data.isNotEmpty() && data[0] == 'A'.code.toByte()) {
+                    // PC sound: 'A' + PCM (frames start with 0xFF, so this can't be a picture)
+                    if (StreamState.audioOn) (player ?: PcmPlayer().also { player = it }).write(data, 1)
+                    return
+                }
                 synchronized(lock) {
                     if (decoding) {
                         // keep only the newest waiting frame; the one it replaces is done with
@@ -100,6 +115,7 @@ class StreamClient(private val ctx: Context, private val onFrame: (Bitmap) -> Un
                         StreamState.screenH = j.optInt("h", 9)
                         StreamState.height = j.optInt("height", 0)
                         StreamState.quality = j.optString("quality", "auto")
+                        StreamState.audioAvailable = j.optBoolean("audio")
                         StreamState.live = true
                         StreamState.status = ""
                     }
@@ -128,7 +144,10 @@ class StreamClient(private val ctx: Context, private val onFrame: (Bitmap) -> Un
         main.post { StreamState.debug = "video: waiting for the track" }
         lateinit var link: RemoteLink
         link = RemoteLink(ctx, Prefs.relay(ctx), Prefs.roomId(ctx),
-            onOpen = { if (quality != "auto") link.sendCtl(JSONObject().put("t", "quality").put("q", quality).toString()) },
+            onOpen = {
+                if (quality != "auto") link.sendCtl(JSONObject().put("t", "quality").put("q", quality).toString())
+                link.setAudio(StreamState.audioOn)
+            },
             onText = { text -> onInfo(text) },
             onClosed = closed@{ why, isFatal ->
                 if (rtc === link) rtc = null
@@ -151,6 +170,7 @@ class StreamClient(private val ctx: Context, private val onFrame: (Bitmap) -> Un
             StreamState.screenH = j.optInt("h", 9)
             StreamState.height = j.optInt("height", 0)
             StreamState.quality = j.optString("quality", "auto")
+            StreamState.audioAvailable = j.optBoolean("audio")
             StreamState.live = true
             StreamState.status = ""
         }
@@ -204,6 +224,14 @@ class StreamClient(private val ctx: Context, private val onFrame: (Bitmap) -> Un
         if (r != null) r.sendCtl(j.toString()) else ws?.send(j.toString())
     }
 
+    fun setAudio(on: Boolean) {
+        StreamQuality.saveAudio(ctx, on)
+        StreamState.audioOn = on
+        rtc?.setAudio(on)
+        if (!on) { player?.release(); player = null }
+        send(JSONObject().put("t", "audio").put("on", on))
+    }
+
     fun setQuality(q: String) {
         StreamQuality.save(ctx, q)
         StreamState.quality = q
@@ -222,6 +250,8 @@ class StreamClient(private val ctx: Context, private val onFrame: (Bitmap) -> Un
         ws = null
         rtc?.close()
         rtc = null
+        player?.release()
+        player = null
         main.post { StreamState.live = false; StreamState.fps = 0 }
     }
 

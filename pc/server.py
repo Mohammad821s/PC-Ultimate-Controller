@@ -847,7 +847,12 @@ import concurrent.futures  # noqa: E402
 
 import screen  # noqa: E402
 
+import queue as _queue  # noqa: E402
+
+import audio  # noqa: E402
+
 _capture_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="capture")
+audio_hub = audio.AudioHub(log=lambda m: log(m)) if audio.AVAILABLE else None
 _capturer = None
 stream_lock = asyncio.Lock()
 _active_stream = {"ws": None}
@@ -889,7 +894,8 @@ async def stream_session(ws, first, peer):
 
 async def _stream_body(ws, first, peer, loop):
     cap = await loop.run_in_executor(_capture_pool, _get_capturer)
-    state = {"quality": str(first.get("quality") or "auto"), "inflight": [], "force": True, "open": True}
+    state = {"quality": str(first.get("quality") or "auto"), "inflight": [], "force": True, "open": True,
+             "audio": bool(first.get("audio", True)) and audio_hub is not None}
     auto_q = screen.AutoQuality()
     wake = asyncio.Event()
     log(f"stream start {peer} quality={state['quality']}")
@@ -902,7 +908,8 @@ async def _stream_body(ws, first, peer, loop):
     async def info():
         h, q = settings()
         await ws.send(json.dumps({"t": "stream_info", "w": cap.width, "h": cap.height,
-                                  "quality": state["quality"], "height": min(h, cap.height)}))
+                                  "quality": state["quality"], "height": min(h, cap.height),
+                                  "audio": audio_hub is not None}))
 
     async def receiver():
         async for raw in ws:
@@ -920,6 +927,8 @@ async def _stream_body(ws, first, peer, loop):
                     state["force"] = True
                     await info()
                     wake.set()
+                elif t == "audio":
+                    state["audio"] = bool(m.get("on")) and audio_hub is not None
                 elif t == "abs":
                     x, y = cap.to_screen(m.get("x", 0), m.get("y", 0))
                     _user32.SetCursorPos(x, y)
@@ -934,7 +943,38 @@ async def _stream_body(ws, first, peer, loop):
         state["open"] = False
         wake.set()
 
+    async def audio_sender():
+        """PC sound as 'A' + raw 16-bit 48 kHz stereo PCM; capture runs only while it's on."""
+        q = None
+        try:
+            while state["open"]:
+                if not state["audio"]:
+                    if q is not None:
+                        audio_hub.unsubscribe(q)
+                        q = None
+                    await asyncio.sleep(0.2)
+                    continue
+                if q is None:
+                    q = audio_hub.subscribe()
+                try:
+                    chunk = await loop.run_in_executor(None, q.get, True, 0.5)
+                except _queue.Empty:
+                    continue
+                parts = [chunk]
+                while len(parts) < 3:
+                    try:
+                        parts.append(q.get_nowait())
+                    except _queue.Empty:
+                        break
+                await ws.send(b"A" + b"".join(parts))
+        except Exception:
+            pass
+        finally:
+            if q is not None:
+                audio_hub.unsubscribe(q)
+
     rx = asyncio.create_task(receiver())
+    ax = asyncio.create_task(audio_sender()) if audio_hub is not None else None
     try:
         await info()
         while state["open"]:
@@ -964,6 +1004,9 @@ async def _stream_body(ws, first, peer, loop):
         log(f"stream ended: {e}")
     finally:
         rx.cancel()
+        state["open"] = False
+        if ax is not None:
+            ax.cancel()
         log(f"stream stop {peer}")
 
 
@@ -1091,17 +1134,62 @@ class ScreenTrack(VideoStreamTrack):
         return frame
 
 
+try:
+    from aiortc import MediaStreamTrack as _MediaStreamTrack
+except Exception:  # pragma: no cover
+    _MediaStreamTrack = object
+
+
+class PcAudioTrack(_MediaStreamTrack):
+    """PC sound for a remote phone; aiortc encodes it as Opus. Silence fills gaps."""
+    kind = "audio"
+
+    def __init__(self):
+        super().__init__()
+        self.q = audio_hub.subscribe()
+        self.on = True
+        self._start = None
+        self._pts = 0
+
+    async def recv(self):
+        import fractions
+        if self._start is None:
+            self._start = time.time()
+        else:
+            self._pts += audio.FRAME
+            wait = self._start + self._pts / audio.RATE - time.time()
+            if wait > 0:
+                await asyncio.sleep(wait)
+        try:
+            data = self.q.get_nowait()
+        except _queue.Empty:
+            data = audio.SILENCE
+        if not self.on:
+            data = audio.SILENCE
+        frame = av.AudioFrame(format="s16", layout="stereo", samples=audio.FRAME)
+        frame.planes[0].update(data)
+        frame.sample_rate = audio.RATE
+        frame.pts = self._pts
+        frame.time_base = fractions.Fraction(1, audio.RATE)
+        return frame
+
+    def stop(self):
+        audio_hub.unsubscribe(self.q)
+        super().stop()
+
+
 class RtcScreen:
     def __init__(self, cap, quality="auto"):
         self.cap = cap
         self.quality = quality if quality in RTC_HEIGHTS else "auto"
         self.height = min(RTC_HEIGHTS[self.quality], cap.height)
         self.track = ScreenTrack(self)
+        self.audio_track = PcAudioTrack() if audio_hub is not None else None
         log(f"remote screen start {self.quality}")
 
     def info(self):
         return {"t": "stream_info", "w": self.cap.width, "h": self.cap.height,
-                "quality": self.quality, "height": self.height}
+                "quality": self.quality, "height": self.height, "audio": self.audio_track is not None}
 
     async def command(self, m):
         t = m.get("t")
@@ -1123,13 +1211,19 @@ class RtcScreen:
             return None
         if t == "ack":
             return None
+        if t == "audio":
+            if self.audio_track is not None:
+                self.audio_track.on = bool(m.get("on"))
+            return None
         return await handle(m)
 
     def close(self):
-        try:
-            self.track.stop()
-        except Exception:
-            pass
+        for tr in (self.track, self.audio_track):
+            try:
+                if tr is not None:
+                    tr.stop()
+            except Exception:
+                pass
         log("remote screen stop")
 
 

@@ -25,6 +25,8 @@ import org.webrtc.SoftwareVideoEncoderFactory
 import org.webrtc.VideoFrame
 import org.webrtc.VideoSink
 import org.webrtc.VideoTrack
+import org.webrtc.AudioTrack
+import org.webrtc.audio.JavaAudioDeviceModule
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
@@ -46,6 +48,14 @@ class RemoteLink(
 ) {
     private val screen = onFrame != null
     private var converter: FrameConverter? = null
+    private var remoteAudio: AudioTrack? = null
+    @Volatile private var audioOn = true
+
+    /** PC sound on/off on this phone (the PC keeps playing it either way) */
+    fun setAudio(on: Boolean) {
+        audioOn = on
+        main.post { try { remoteAudio?.setEnabled(on) } catch (_: Exception) {} }
+    }
     private val main = Handler(Looper.getMainLooper())
     private val http = OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS).readTimeout(0, TimeUnit.MILLISECONDS).build()
     private var signal: WebSocket? = null
@@ -87,6 +97,11 @@ class RemoteLink(
             override fun onRenegotiationNeeded() {}
             override fun onAddTrack(r: RtpReceiver, s: Array<out MediaStream>) {}
             override fun onTrack(t: RtpTransceiver) {
+                (t.receiver.track() as? AudioTrack)?.let { a ->
+                    remoteAudio = a
+                    main.post { try { a.setEnabled(audioOn) } catch (_: Exception) {} }
+                    return
+                }
                 main.post { StreamState.debug = "video: track arrived" }
                 val track = t.receiver.track() as? VideoTrack ?: run {
                     main.post { StreamState.debug = "video: track is not video (${t.mediaType})" }
@@ -123,13 +138,19 @@ class RemoteLink(
                 MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO,
                 RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY)
             )
+            peer.addTransceiver(
+                MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO,
+                RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY)
+            )
         } else {
             fast = peer.createDataChannel("fast", DataChannel.Init().apply { ordered = false; maxRetransmits = 0 })
         }
 
         peer.createOffer(object : SdpAdapter() {
             override fun onCreateSuccess(sdp: SessionDescription) {
-                peer.setLocalDescription(SdpAdapter(), sdp)
+                // ask for stereo Opus (music and games, not a phone call)
+                val text = sdp.description.replace("useinbandfec=1", "useinbandfec=1;stereo=1;sprop-stereo=1")
+                peer.setLocalDescription(SdpAdapter(), SessionDescription(sdp.type, text))
             }
             override fun onCreateFailure(e: String?) = finish("Couldn't start the connection", false)
         }, MediaConstraints())
@@ -227,7 +248,18 @@ class RemoteLink(
                 PeerConnectionFactory.InitializationOptions.builder(c.applicationContext).createInitializationOptions()
             )
             // software decoding hands us plain I420 frames, simple to turn into bitmaps
+            // PC sound plays as media (loudspeaker / headphones, media volume), in stereo
+            val adm = JavaAudioDeviceModule.builder(c.applicationContext)
+                .setUseStereoOutput(true)
+                .setAudioAttributes(
+                    android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build()
+                )
+                .createAudioDeviceModule()
             return PeerConnectionFactory.builder()
+                .setAudioDeviceModule(adm)
                 .setVideoDecoderFactory(SoftwareVideoDecoderFactory())
                 .setVideoEncoderFactory(SoftwareVideoEncoderFactory())
                 .createPeerConnectionFactory().also { shared = it }

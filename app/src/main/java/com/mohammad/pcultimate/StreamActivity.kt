@@ -188,6 +188,13 @@ class StreamActivity : ComponentActivity() {
                     Text("Screen", style = MaterialTheme.typography.titleLarge)
                     Text(statusLine(), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
                 }
+                if (StreamState.audioAvailable) {
+                    IconTile(if (StreamState.audioOn) R.drawable.ic_vol_high else R.drawable.ic_vol_off,
+                        if (StreamState.audioOn) "Mute PC sound on phone" else "Play PC sound on phone") {
+                        client.setAudio(!StreamState.audioOn)
+                    }
+                    Spacer(Modifier.width(8.dp))
+                }
                 QualityButton()
                 Spacer(Modifier.width(8.dp))
                 IconTile(R.drawable.ic_pip, "Small window") { enterPip() }
@@ -227,6 +234,12 @@ class StreamActivity : ComponentActivity() {
                     Text(statusLine(), color = Color.White.copy(alpha = 0.8f), style = MaterialTheme.typography.labelMedium,
                         modifier = Modifier.padding(horizontal = 8.dp))
                     QualityButton(dark = true)
+                    if (StreamState.audioAvailable) {
+                        OverlayButton(if (StreamState.audioOn) R.drawable.ic_vol_high else R.drawable.ic_vol_off,
+                            if (StreamState.audioOn) "Mute PC sound on phone" else "Play PC sound on phone") {
+                            client.setAudio(!StreamState.audioOn)
+                        }
+                    }
                     OverlayButton(R.drawable.ic_keyboard, "Keyboard") { keyboard = true }
                     OverlayButton(R.drawable.ic_pip, "Small window") { enterPip() }
                     OverlayButton(R.drawable.ic_fullscreen_exit, "Exit full screen") { setFull(false) }

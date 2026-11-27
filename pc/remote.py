@@ -245,6 +245,8 @@ class RemoteAgent:
             await pc.setRemoteDescription(RTCSessionDescription(sdp=m["sdp"], type="offer"))
             if screen is not None:
                 pc.addTrack(screen.track)
+                if getattr(screen, "audio_track", None) is not None:
+                    pc.addTrack(screen.audio_track)
             await pc.setLocalDescription(await pc.createAnswer())  # gathers all candidates
             await self._send_relay({"t": "answer", "sdp": pc.localDescription.sdp, "to": sid})
         except Exception as e:

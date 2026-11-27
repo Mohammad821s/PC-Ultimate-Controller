@@ -16,7 +16,7 @@ if errorlevel 1 (
   exit /b 1
 )
 echo Installing now-playing support (optional)...
-python -m pip install --upgrade winrt-runtime winrt-Windows.Media.Control winrt-Windows.Storage.Streams winrt-Windows.Foundation uiautomation pycaw mss pillow aiortc
+python -m pip install --upgrade winrt-runtime winrt-Windows.Media.Control winrt-Windows.Storage.Streams winrt-Windows.Foundation uiautomation pycaw mss pillow aiortc soundcard numpy
 for /f "delims=" %%i in ('python -c "import sys,os;print(os.path.join(os.path.dirname(sys.executable),'pythonw.exe'))"') do set PYW=%%i
 echo Using %PYW%
 del "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\PC Ultimate Controller.lnk" >nul 2>nul

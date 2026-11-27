@@ -8,3 +8,5 @@ pycaw
 mss
 pillow
 aiortc
+soundcard
+numpy
