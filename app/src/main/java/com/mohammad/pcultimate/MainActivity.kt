@@ -35,6 +35,7 @@ class MainActivity : ComponentActivity(), PcClient.Listener {
         AppSettings.load(this)
         enableEdgeToEdge()
         Updater.cleanup(this)
+        PcWaker.load(this)
         if (intent?.getBooleanExtra(Updater.EXTRA_OPEN, false) == true) Updater.dismissed = false
 
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {

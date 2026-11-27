@@ -63,6 +63,7 @@ fun SettingsScreen(onBack: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     fun persist() = AppSettings.save(ctx)
+    var ownerOn by remember { mutableStateOf(PcWaker.owner(ctx)) }
 
     Column(
         Modifier.fillMaxSize().background(cs.background).statusBarsPadding().navigationBarsPadding().imePadding()
@@ -142,10 +143,19 @@ fun SettingsScreen(onBack: () -> Unit) {
                 ToggleRow("Haptic feedback", "A light tap when you click", AppSettings.haptics) { AppSettings.haptics = it; persist() }
             }
 
+            if (ownerOn) WakerSection()
+
             Section("About") {
                 val pkg = remember { ctx.packageManager.getPackageInfo(ctx.packageName, 0) }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    var taps by remember { mutableStateOf(0) }
+                    Column(Modifier.weight(1f).combinedClickableCompat {
+                        taps++
+                        if (taps >= 7 && !PcWaker.owner(ctx)) {
+                            PcWaker.setOwner(ctx, true); ownerOn = true
+                            android.widget.Toast.makeText(ctx, "Owner tools on", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }, verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text("App version ${pkg.versionName}", style = MaterialTheme.typography.bodyMedium)
                         Text(
                             if (PcState.pcVersion.isNotBlank()) "PC app build ${PcState.pcVersion}" else "PC app version shows once connected",
@@ -436,4 +446,31 @@ internal fun ColorPickerDialog(start: String, onDismiss: () -> Unit, onPick: (St
         confirmButton = { androidx.compose.material3.TextButton(onClick = { onPick(String.format("#%06X", current and 0xFFFFFF)) }) { Text("Done") } },
         dismissButton = { androidx.compose.material3.TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
+}
+
+/** Owner tools: link the PC Waker (ESP32) that turns this PC on from anywhere. */
+@Composable
+private fun WakerSection() {
+    val cs = MaterialTheme.colorScheme
+    val ctx = LocalContext.current
+    Section("PC Waker") {
+        Text(
+            when {
+                !PcWaker.linked -> "Not linked. Plug the PC Waker in at home, then tap Link while connected to your PC."
+                PcWaker.online == false -> "Linked, but offline right now (unplugged or no Wi-Fi)."
+                else -> "Linked. A Turn on button shows on the home screen while your PC is off."
+            },
+            style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(onClick = { PcWaker.link() }, enabled = PcState.connected && !PcWaker.linkBusy,
+                shape = RoundedCornerShape(12.dp)) { Text(if (PcWaker.linked) "Link again" else "Link") }
+            if (PcWaker.linked) androidx.compose.material3.OutlinedButton(onClick = { PcWaker.unlink() },
+                enabled = PcState.connected && !PcWaker.linkBusy, shape = RoundedCornerShape(12.dp)) { Text("Remove") }
+        }
+        if (PcWaker.linkMessage.isNotEmpty()) Text(PcWaker.linkMessage, style = MaterialTheme.typography.bodySmall)
+        androidx.compose.material3.TextButton(onClick = {
+            ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("${Prefs.relay(ctx).replace("wss://", "https://").ifBlank { "https://puc-relay.erenjeager078.workers.dev" }}/flash")))
+        }) { Text("Install the PC Waker firmware (open on a computer)") }
+    }
 }

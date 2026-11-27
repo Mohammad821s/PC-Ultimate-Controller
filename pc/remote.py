@@ -63,6 +63,9 @@ class RemoteAgent:
         # async () -> object with .track, .info() -> dict, async .command(dict) -> dict|None, .close()
         self.screen_factory = screen_factory
         self.ws = None
+        # optional hooks set by the server: called when the relay connection opens / for other relay messages
+        self.on_online = None
+        self.on_message = None
         self.peers = {}                     # relay sid -> RTCPeerConnection
         self.ice = None
         self.ice_at = 0
@@ -87,6 +90,8 @@ class RemoteAgent:
                     self.ws = ws
                     delay = 2
                     self._status("online")
+                    if self.on_online:
+                        asyncio.create_task(self.on_online())
                     keep = asyncio.create_task(self._keepalive(ws))
                     try:
                         async for raw in ws:
@@ -107,6 +112,9 @@ class RemoteAgent:
         while True:
             await asyncio.sleep(25)
             await ws.send('{"t":"ping"}')
+
+    async def send_relay(self, msg):
+        await self._send_relay(msg)
 
     async def _send_relay(self, msg):
         if self.ws:
@@ -145,6 +153,8 @@ class RemoteAgent:
             pass  # the WebRTC connection keeps working without the relay
         elif t == "pong":
             pass
+        elif self.on_message:
+            await self.on_message(m)
 
     # ------------------------------------------------------------ WebRTC
 

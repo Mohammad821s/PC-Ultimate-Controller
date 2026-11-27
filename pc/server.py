@@ -85,6 +85,7 @@ def save_config():
 
 
 import library  # noqa: E402
+import waker  # noqa: E402
 
 library.set_logger(lambda m: log(m))
 SHORTCUTS = library.Shortcuts(CONFIG, save_config)
@@ -762,6 +763,12 @@ async def handle(msg):
         await broadcast({"t": "shortcuts", "items": await loop.run_in_executor(None, SHORTCUTS.public_list)})
     elif t == "test_shortcut":
         await loop.run_in_executor(None, library.run, dict(msg.get("item") or {}))
+    elif t == "waker_link":
+        return await waker_link()
+    elif t == "waker_unlink":
+        return await waker_unlink()
+    elif t == "waker_state":
+        return {"t": "waker_state", "linked": bool(CONFIG.get("waker")), "online": waker_online}
 
 
 # ---------------------------------------------------------------- pairing (approve the phone on the PC)
@@ -785,6 +792,74 @@ def add_device(th, name):
     devices.append({"token": th, "name": name[:60], "added": time.strftime("%Y-%m-%d %H:%M")})
     CONFIG["devices"] = devices
     save_config()
+    schedule_waker_sync()
+
+
+# ---------------------------------------------------------------- PC Waker (turn the PC on from anywhere)
+
+waker_online = False
+
+
+def schedule_waker_sync():
+    try:
+        asyncio.get_running_loop().create_task(waker_sync())
+    except RuntimeError:
+        pass
+
+
+async def waker_sync():
+    """Tells the relay which phones may wake this PC (hashes only) and the MAC to wake."""
+    w = CONFIG.get("waker")
+    if not w or remote_agent is None:
+        return
+    await remote_agent.send_relay({"t": "waker_set", "key_hash": hashlib.sha256(w["key"].encode()).hexdigest(),
+                                   "phones": [d["token"] for d in CONFIG.get("devices", []) if d.get("token")],
+                                   "mac": w.get("mac", "")})
+
+
+async def on_relay_message(m):
+    global waker_online
+    if m.get("t") == "waker_state":
+        waker_online = bool(m.get("waker_online"))
+        await broadcast({"t": "waker_state", "linked": bool(CONFIG.get("waker")), "online": waker_online})
+
+
+async def waker_link():
+    if remote_agent is None:
+        return {"t": "waker_link", "ok": False, "error": "Remote access is off on this PC"}
+    loop = asyncio.get_running_loop()
+    found = await loop.run_in_executor(None, waker.discover)
+    if not found:
+        return {"t": "waker_link", "ok": False, "error": "No PC Waker found on the home network. Is it plugged in and on Wi-Fi?"}
+    old = CONFIG.get("waker") or {}
+    # prefer one that is not linked yet, else the one this PC linked before
+    found.sort(key=lambda f: (f[1].get("linked", False), f[0] != old.get("ip")))
+    ip, info = found[0]
+    mac = await loop.run_in_executor(None, waker.pc_mac) or old.get("mac", "")
+    if not mac:
+        return {"t": "waker_link", "ok": False, "error": "Couldn't read this PC's network card address"}
+    ident = remote_identity()
+    host = relay_url().split("://", 1)[-1].split("/", 1)[0]
+    key = waker.new_key()
+    try:
+        await loop.run_in_executor(None, waker.link, ip, {"host": host, "room": ident["id"], "key": key, "mac": mac,
+                                                          "old_key": old.get("key", "")})
+    except Exception as e:
+        log(f"waker link failed: {e!r}")
+        return {"t": "waker_link", "ok": False, "error": "The PC Waker refused the link (it may belong to another PC; hold its BOOT button 6 s to reset it)"}
+    CONFIG["waker"] = {"key": key, "mac": mac, "ip": ip, "id": info.get("id", ""), "linked": time.strftime("%Y-%m-%d %H:%M")}
+    save_config()
+    await waker_sync()
+    log(f"waker linked at {ip}")
+    return {"t": "waker_link", "ok": True, "mac": mac}
+
+
+async def waker_unlink():
+    if CONFIG.pop("waker", None) is not None:
+        save_config()
+    if remote_agent is not None:
+        await remote_agent.send_relay({"t": "waker_set", "key_hash": None})
+    return {"t": "waker_link", "ok": True, "removed": True}
 
 
 def ask_approval(name, ip):
@@ -1076,7 +1151,7 @@ def remote_identity():
 
 def hello_messages(remote_access):
     hello = {"t": "hello", "name": socket.gethostname(), "udp": INPUT_PORT, "version": VERSION,
-             "remote": remote_access}
+             "remote": remote_access, "waker": bool(CONFIG.get("waker"))}
     if remote.AVAILABLE:
         hello["relay"] = relay_url()
         hello["rid"] = remote_identity()["id"]
@@ -1100,6 +1175,8 @@ def start_remote():
         log=log,
         screen_factory=make_rtc_screen,
     )
+    remote_agent.on_online = waker_sync
+    remote_agent.on_message = on_relay_message
     asyncio.create_task(remote_agent.run())
 
 

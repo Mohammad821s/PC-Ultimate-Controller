@@ -87,6 +87,7 @@ fun HomeScreen(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Header(onSettings, onConnect, onScreen)
+        if (!PcState.connected && PcWaker.linked) WakeCard()
         NowPlayingCard()
         ShortcutsRow(onAddShortcut, onEditShortcut)
         TouchpadPanel(Modifier.weight(1f))
@@ -384,3 +385,24 @@ internal fun TouchpadFxView(modifier: Modifier, radius: androidx.compose.ui.unit
 
 /** Dark base the effects are designed on (the same in light and dark themes). */
 internal const val FX_PAD_BG = 0xFF0A0910.toInt()
+
+/** Shown while the PC is off, only when it has a PC Waker linked. */
+@Composable
+private fun WakeCard() {
+    val cs = MaterialTheme.colorScheme
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(cs.primaryContainer).padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text("Your PC is off", style = MaterialTheme.typography.titleSmall, color = cs.onPrimaryContainer)
+            Text(PcWaker.status.ifBlank { "Turn it on from here, from anywhere" },
+                style = MaterialTheme.typography.bodySmall, color = cs.onPrimaryContainer.copy(alpha = 0.8f))
+        }
+        Button(onClick = { PcWaker.wake(ctx) }, enabled = !PcWaker.busy, shape = RoundedCornerShape(14.dp)) {
+            if (PcWaker.busy) androidx.compose.material3.CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = cs.onPrimary)
+            else Text("Turn on")
+        }
+    }
+}

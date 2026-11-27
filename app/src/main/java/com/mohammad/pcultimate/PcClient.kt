@@ -305,6 +305,7 @@ object PcClient {
                     val relay = j.optString("relay"); val rid = j.optString("rid")
                     if (relay.isNotBlank() && rid.isNotBlank()) appCtx?.let { Prefs.saveRemote(it, relay, rid) }
                 }
+                appCtx?.let { PcWaker.setLinked(it, j.optBoolean("waker")) }
                 setStatus(true, if (isRemote) "Connected from outside" else "Connected")
                 while (true) { val s = pending.poll() ?: break; reply(s) }
                 send(JSONObject().put("t", "list_shortcuts"))
@@ -335,6 +336,7 @@ object PcClient {
                 media = m
                 main.post { PcState.media = m; listeners.forEach { it.onMedia(m) } }
             }
+            "waker_state", "waker_link" -> appCtx?.let { PcWaker.onPcMessage(it, j) }
             "volume" -> {
                 val v = if (j.isNull("v")) null else j.optDouble("v").toFloat()
                 main.post { PcState.volume = v }
@@ -399,6 +401,7 @@ object PcClient {
     fun scroll(steps: Int) {
         if (!sendFast("s,$steps")) send(JSONObject().put("t", "scroll").put("n", steps), false)
     }
+    fun sendRaw(o: JSONObject) = send(o, queueIfOffline = false)
     fun click(button: String) = send(JSONObject().put("t", "click").put("b", button))
     fun key(k: String) = send(JSONObject().put("t", "key").put("k", k))
     fun text(s: String) = send(JSONObject().put("t", "text").put("s", s))
