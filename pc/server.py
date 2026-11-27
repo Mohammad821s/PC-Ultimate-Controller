@@ -321,13 +321,8 @@ def invoke_at(pt):
 def mouse_click(button):
     if not _user32:
         return
-    cls, pt = _root_class_at_cursor()
-    if cls in TASKBAR_CLASSES:
-        if button == "left":
-            invoke_at(pt)
-        else:
-            log(f"skipped {button} click on the taskbar")
-        return
+    # Plain clicks work on the taskbar too now (the special UI Automation path was only needed
+    # while 360 Total Security blocked simulated input after a taskbar click; tested 2026-11-27).
     # mouse_event is accepted on this PC where SendInput button events are rejected
     down, up = BUTTONS.get(button, BUTTONS["left"])
     _user32.mouse_event(down, 0, 0, 0, 0)
