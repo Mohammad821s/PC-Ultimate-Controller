@@ -177,7 +177,7 @@ fun UpdatePanel() {
                 Text(String.format("%.1f MB", r.size / 1_000_000.0), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
             }
             Button(onClick = { Updater.install(ctx) }, enabled = pr == null, shape = RoundedCornerShape(12.dp)) {
-                Text(if (pr == null) "Update" else "${(pr * 100).toInt()}%")
+                Text("Download")
             }
         }
     }
