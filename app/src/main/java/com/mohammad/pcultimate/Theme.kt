@@ -53,6 +53,8 @@ object AppSettings {
             .putString("theme", themeMode).putBoolean("dynamic", dynamicColor).putInt("accent", accent)
             .putFloat("sens", sensitivity).putBoolean("natural", naturalScroll).putBoolean("haptics", haptics)
             .apply()
+        // widgets set to "match the app" follow theme and accent changes right away
+        try { Widgets.updateAll(c) } catch (e: Exception) {}
     }
 
     fun isDark(systemDark: Boolean) = when (themeMode) {

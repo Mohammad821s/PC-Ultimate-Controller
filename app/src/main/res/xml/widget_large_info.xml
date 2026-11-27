@@ -4,11 +4,13 @@
     android:minHeight="250dp"
     android:targetCellWidth="4"
     android:targetCellHeight="3"
-    android:minResizeWidth="220dp"
-    android:minResizeHeight="220dp"
+    android:minResizeWidth="100dp"
+    android:minResizeHeight="40dp"
     android:resizeMode="horizontal|vertical"
     android:updatePeriodMillis="0"
     android:initialLayout="@layout/widget_large"
     android:previewLayout="@layout/widget_large"
     android:description="@string/widget_large_desc"
-    android:widgetCategory="home_screen" />
+    android:widgetCategory="home_screen"
+    android:configure="com.mohammad.pcultimate.WidgetConfigActivity"
+    android:widgetFeatures="reconfigurable" />
