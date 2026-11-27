@@ -196,7 +196,7 @@ object Widgets {
             return
         }
         // as many columns as fit nicely: about 60dp each
-        val cols = ((wDp - 28f) / 60f).toInt().coerceIn(3, 6) + 1
+        val cols = ((wDp - 28f) / 60f).toInt().coerceIn(3, 5) + 1
         val rows = if (large && hDp >= 280f) 2 else 1
         val all = PcState.shortcuts
         val chosen = if (s.shortcutIds.isEmpty()) all else s.shortcutIds.mapNotNull { sid -> all.firstOrNull { it.id == sid } }
