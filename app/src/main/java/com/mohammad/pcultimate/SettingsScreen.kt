@@ -124,6 +124,8 @@ fun SettingsScreen(onBack: () -> Unit) {
                 CustomColor { AppSettings.accent = it; AppSettings.dynamicColor = false; persist() }
             }
 
+            WidgetsSection()
+
             Section("Touchpad") {
                 Row(Modifier.fillMaxWidth()) {
                     Text("Pointer speed", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
@@ -296,5 +298,39 @@ private fun ConnectionSection() {
             },
             modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(14.dp)
         ) { Text("Connect") }
+    }
+}
+
+@Composable
+private fun WidgetsSection() {
+    val cs = MaterialTheme.colorScheme
+    val ctx = LocalContext.current
+    val m = android.appwidget.AppWidgetManager.getInstance(ctx)
+    val ids = remember { Widgets.allIds(ctx) }
+    Section("Widgets") {
+        if (ids.isEmpty()) {
+            Text("Add a widget from your home screen, then customize its colors and buttons here.",
+                style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+        }
+        ids.forEachIndexed { i, id ->
+            val cls = m.getAppWidgetInfo(id)?.provider?.className ?: ""
+            val kind = when {
+                cls.endsWith("WidgetSmall") -> "Now playing"
+                cls.endsWith("WidgetLarge") -> "Full remote"
+                else -> "Player and shortcuts"
+            }
+            Row(
+                Modifier.fillMaxWidth().height(52.dp).clip(RoundedCornerShape(14.dp)).background(cs.surfaceContainerHigh)
+                    .combinedClickableCompat {
+                        ctx.startActivity(Intent(ctx, WidgetConfigActivity::class.java)
+                            .putExtra(android.appwidget.AppWidgetManager.EXTRA_APPWIDGET_ID, id)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    }.padding(horizontal = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("$kind ${i + 1}", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                Text("Customize", style = MaterialTheme.typography.labelLarge, color = cs.primary)
+            }
+        }
     }
 }
