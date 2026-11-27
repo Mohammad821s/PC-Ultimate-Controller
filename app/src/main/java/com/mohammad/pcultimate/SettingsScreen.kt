@@ -166,26 +166,29 @@ fun SettingsScreen(onBack: () -> Unit) {
 /** Status, progress and the Update button. Shared by Settings and the update dialog. */
 @Composable
 fun UpdatePanel() {
-    val cs = MaterialTheme.colorScheme
-    val ctx = LocalContext.current
-    val r = Updater.available
-    val pr = Updater.progress
-    if (r != null) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Build ${r.build} is ready", style = MaterialTheme.typography.bodyMedium)
-                Text(String.format("%.1f MB", r.size / 1_000_000.0), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
-            }
-            Button(onClick = { Updater.install(ctx) }, enabled = pr == null, shape = RoundedCornerShape(12.dp)) {
-                Text("Download")
+    // the dialog lays its text slot out as a box, so stack the parts explicitly
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        val cs = MaterialTheme.colorScheme
+        val ctx = LocalContext.current
+        val r = Updater.available
+        val pr = Updater.progress
+        if (r != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Build ${r.build} is ready", style = MaterialTheme.typography.bodyMedium)
+                    Text(String.format("%.1f MB", r.size / 1_000_000.0), style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+                }
+                Button(onClick = { Updater.install(ctx) }, enabled = pr == null, shape = RoundedCornerShape(12.dp)) {
+                    Text("Download")
+                }
             }
         }
-    }
-    if (pr != null) {
-        androidx.compose.material3.LinearProgressIndicator(progress = { pr }, modifier = Modifier.fillMaxWidth())
-    }
-    if (Updater.status.isNotEmpty()) {
-        Text(Updater.status, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+        if (pr != null) {
+            androidx.compose.material3.LinearProgressIndicator(progress = { pr }, modifier = Modifier.fillMaxWidth())
+        }
+        if (Updater.status.isNotEmpty()) {
+            Text(Updater.status, style = MaterialTheme.typography.bodySmall, color = cs.onSurfaceVariant)
+        }
     }
 }
 
